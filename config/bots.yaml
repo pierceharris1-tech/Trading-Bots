@@ -1,0 +1,201 @@
+ORB_LDN_M15_v1:
+  account_id: 101-004-27287318-002
+  instrument: XAU_USD
+  timeframe: M15
+  strategy: orb_m15
+  dry_run: false
+  risk_pct: 0.01
+
+  session:
+    tz: Europe/London
+    start: "08:00"
+    range_minutes: 15
+
+  breakout:
+    confirm: close
+    buffer: 0.0
+
+  tp:
+    r_mult: 2.0
+
+  stop:
+    mode: or_low
+
+ORB_US_M15_v1:
+  account_id: 101-004-27287318-002
+  instrument: XAU_USD
+  timeframe: M15
+  strategy: orb_m15
+  dry_run: false
+  risk_pct: 0.01
+
+  session:
+    tz: America/New_York
+    start: "09:30"
+    range_minutes: 15
+
+  breakout:
+    confirm: close
+    buffer: 0.0
+
+  tp:
+    r_mult: 2.0
+
+  stop:
+    mode: or_low
+
+ORB_UK100_LDN_M15_v1:
+  account_id: 101-004-27287318-002
+  instrument: UK100_GBP
+  timeframe: M15
+  strategy: orb_m15
+  dry_run: false
+  risk_pct: 0.01
+
+  session:
+    tz: Europe/London
+    start: "08:00"
+    range_minutes: 15
+
+  breakout:
+    confirm: close
+    buffer: 0.0
+
+  tp:
+    r_mult: 2.0
+
+  stop:
+    mode: symmetric
+
+
+ORB_SPX500_US_M15_v1:
+  account_id: 101-004-27287318-002
+  instrument: SPX500_USD
+  timeframe: M15
+  strategy: orb_m15
+  dry_run: false
+  risk_pct: 0.01
+
+  session:
+    tz: America/New_York
+    start: "09:30"
+    range_minutes: 15
+
+  breakout:
+    confirm: close
+    buffer: 0.0
+
+  tp:
+    r_mult: 2.0
+
+  stop:
+    mode: symmetric
+
+ORB_UK100_LDN_LIMIT_v1:
+  account_id: 101-004-27287318-002
+  instrument: UK100_GBP
+  timeframe: M15
+  strategy: orb_m15
+  dry_run: false
+  risk_pct: 0.01
+  session:
+    tz: Europe/London
+    start: "08:00"
+    range_minutes: 15
+  breakout:
+    confirm: close
+    buffer: 0.0
+  entry:
+    mode: limit_or_edge
+    tp_sl_mult: 2.0
+
+ORB_SPX500_US_LIMIT_v1:
+  account_id: 101-004-27287318-002
+  instrument: SPX500_USD
+  timeframe: M15
+  strategy: orb_m15
+  dry_run: false
+  risk_pct: 0.01
+  session:
+    tz: America/New_York
+    start: "09:30"
+    range_minutes: 15
+  breakout:
+    confirm: close
+    buffer: 0.0
+  entry:
+    mode: limit_or_edge
+    tp_sl_mult: 2.0
+
+CHANNEL_BREAKOUT:
+  account_id: 101-004-27287318-003
+  strategy: channel_breakout_daily
+  timeframe: D
+  rejection_rule: true
+  instruments:
+    - AUD_USD
+    - GBP_USD
+    - XAU_USD
+    - USD_JPY
+    - EUR_USD
+    - USD_CAD
+    - NZD_USD
+    - EUR_GBP
+
+REVERSAL_DAYS:
+  account_id: 101-004-27287318-003
+  strategy: channel_breakout_daily
+  sub_strategy: reversal_days
+  timeframe: D
+  instruments:
+    - AUD_USD
+    - GBP_USD
+    - XAU_USD
+    - USD_JPY
+    - EUR_USD
+    - USD_CAD
+    - NZD_USD
+    - EUR_GBP
+
+CONQUEROR_FX:
+  account_id: 101-004-27287318-004
+  strategy: conqueror_fx_daily
+  timeframe: D
+  variant: I
+  instruments:
+    - AUD_USD
+    - GBP_USD
+    - XAU_USD
+    - USD_JPY
+    - EUR_USD
+    - USD_CAD
+    - NZD_USD
+    - EUR_GBP
+
+INSIDE_DAYS:
+  account_id: 101-004-27287318-005
+  strategy: inside_days_daily
+  timeframe: D
+  instruments:
+    - AUD_USD
+    - GBP_USD
+    - XAU_USD
+    - USD_JPY
+    - EUR_USD
+    - USD_CAD
+    - NZD_USD
+    - EUR_GBP
+
+SLINGSHOT:
+  account_id: 101-004-27287318-006
+  strategy: slingshot_daily
+  timeframe: D
+  instruments:
+    - AUD_USD
+    - GBP_USD
+    - XAU_USD
+    - USD_JPY
+    - EUR_USD
+    - USD_CAD
+    - NZD_USD
+    - EUR_GBP

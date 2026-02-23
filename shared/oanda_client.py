@@ -1,0 +1,248 @@
+from __future__ import annotations
+
+import requests
+from typing import Any, Optional
+
+from shared.logging_utils import get_logger
+
+log = get_logger("shared.oanda_client")
+
+
+class OandaClient:
+    def __init__(self, base_url: str, api_key: str, account_id: str, bot_id: str = "UNKNOWN_BOT") -> None:
+        self.base_url = base_url.rstrip("/")
+        self.account_id = account_id
+        self.bot_id = bot_id
+        self.session = requests.Session()
+        self.session.headers.update(
+            {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
+        )
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        payload: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        url = f"{self.base_url}{path}"
+        r = self.session.request(method, url, params=params, json=payload, timeout=20)
+        if not r.ok:
+            try:
+                body = r.json()
+            except Exception:
+                body = r.text
+            merged_ctx = {"bot_id": self.bot_id}
+            merged_ctx.update(context or {})
+            log.error(
+                "OANDA_HTTP_ERROR | status=%s | context=%s | body=%s",
+                r.status_code,
+                merged_ctx,
+                body,
+            )
+            raise RuntimeError(
+                f"OANDA request failed | status={r.status_code} | context={merged_ctx} | body={body}"
+            )
+        return r.json()
+
+    def get_candles(self, instrument: str, granularity: str, count: int = 100) -> dict[str, Any]:
+        params = {
+            "granularity": granularity,
+            "count": count,
+            "price": "M",
+        }
+        return self._request(
+            "GET",
+            f"/v3/instruments/{instrument}/candles",
+            params=params,
+            context={
+                "account_id": self.account_id,
+                "instrument": instrument,
+                "granularity": granularity,
+                "count": count,
+                "order_type": "NONE",
+                "units": 0,
+            },
+        )
+
+    def place_market_order(
+        self,
+        *,
+        units: int,
+        instrument: str,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """
+        Places a MARKET order, optionally with attached SL/TP ("bracket"/OCO-style).
+        OANDA supports attached orders via stopLossOnFill / takeProfitOnFill.
+
+        Notes:
+          - prices must be strings
+          - timeInForce for attached orders typically "GTC"
+        """
+        order: dict[str, Any] = {
+            "type": "MARKET",
+            "instrument": instrument,
+            "units": str(int(units)),
+            "timeInForce": "FOK",
+            "positionFill": "DEFAULT",
+        }
+
+        # Attach SL/TP if provided
+        if take_profit is not None:
+            order["takeProfitOnFill"] = {
+                "price": str(float(take_profit)),
+                "timeInForce": "GTC",
+            }
+
+        if stop_loss is not None:
+            order["stopLossOnFill"] = {
+                "price": str(float(stop_loss)),
+                "timeInForce": "GTC",
+            }
+
+        payload = {"order": order}
+        return self._request(
+            "POST",
+            f"/v3/accounts/{self.account_id}/orders",
+            payload=payload,
+            context={
+                "account_id": self.account_id,
+                "instrument": instrument,
+                "order_type": "MARKET",
+                "units": int(units),
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+            },
+        )
+
+    def place_limit_order(
+        self,
+        *,
+        units: int,
+        instrument: str,
+        price: float,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+        time_in_force: str = "GTC",
+    ) -> dict[str, Any]:
+        """
+        Places a LIMIT order at a specified price, optionally with attached SL/TP.
+        """
+        order: dict[str, Any] = {
+            "type": "LIMIT",
+            "instrument": instrument,
+            "units": str(int(units)),
+            "price": str(float(price)),
+            "timeInForce": time_in_force,
+            "positionFill": "DEFAULT",
+        }
+
+        if take_profit is not None:
+            order["takeProfitOnFill"] = {
+                "price": str(float(take_profit)),
+                "timeInForce": "GTC",
+            }
+
+        if stop_loss is not None:
+            order["stopLossOnFill"] = {
+                "price": str(float(stop_loss)),
+                "timeInForce": "GTC",
+            }
+
+        payload = {"order": order}
+        return self._request(
+            "POST",
+            f"/v3/accounts/{self.account_id}/orders",
+            payload=payload,
+            context={
+                "account_id": self.account_id,
+                "instrument": instrument,
+                "order_type": "LIMIT",
+                "units": int(units),
+                "price": price,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+            },
+        )
+
+    def place_stop_order(
+        self,
+        *,
+        units: int,
+        instrument: str,
+        price: float,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+        time_in_force: str = "GTC",
+    ) -> dict[str, Any]:
+        order: dict[str, Any] = {
+            "type": "STOP",
+            "instrument": instrument,
+            "units": str(int(units)),
+            "price": str(float(price)),
+            "timeInForce": time_in_force,
+            "positionFill": "DEFAULT",
+        }
+        if take_profit is not None:
+            order["takeProfitOnFill"] = {"price": str(float(take_profit)), "timeInForce": "GTC"}
+        if stop_loss is not None:
+            order["stopLossOnFill"] = {"price": str(float(stop_loss)), "timeInForce": "GTC"}
+        payload = {"order": order}
+        return self._request(
+            "POST",
+            f"/v3/accounts/{self.account_id}/orders",
+            payload=payload,
+            context={
+                "account_id": self.account_id,
+                "instrument": instrument,
+                "order_type": "STOP",
+                "units": int(units),
+                "price": price,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+            },
+        )
+
+    def list_pending_orders(self) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            f"/v3/accounts/{self.account_id}/pendingOrders",
+            context={"account_id": self.account_id, "order_type": "LIST_PENDING", "units": 0},
+        )
+
+    def cancel_order(self, order_id: str) -> dict[str, Any]:
+        return self._request(
+            "PUT",
+            f"/v3/accounts/{self.account_id}/orders/{order_id}/cancel",
+            context={"account_id": self.account_id, "order_type": "CANCEL", "order_id": order_id, "units": 0},
+        )
+
+    def list_open_trades(self) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            f"/v3/accounts/{self.account_id}/openTrades",
+            context={"account_id": self.account_id, "order_type": "LIST_OPEN_TRADES", "units": 0},
+        )
+
+    def close_trade(self, trade_id: str, units: str = "ALL") -> dict[str, Any]:
+        payload = {"units": units}
+        return self._request(
+            "PUT",
+            f"/v3/accounts/{self.account_id}/trades/{trade_id}/close",
+            payload=payload,
+            context={"account_id": self.account_id, "order_type": "CLOSE_TRADE", "trade_id": trade_id, "units": units},
+        )
+
+    def get_trade(self, trade_id: str) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            f"/v3/accounts/{self.account_id}/trades/{trade_id}",
+            context={"account_id": self.account_id, "order_type": "GET_TRADE", "trade_id": trade_id, "units": 0},
+        )
