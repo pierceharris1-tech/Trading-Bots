@@ -4,15 +4,15 @@ import time
 
 import pandas as pd
 
-from shared.bot_config import cfg_instruments, require_account_id
+from shared.bot_config import cfg_instruments, cfg_timeframe, require_account_id
 from shared.config import load_settings
 from shared.daily_engine import (
     kv_json_get,
     kv_json_set,
-    last_processed_day_key,
+    last_processed_bar_key,
     reconcile_closed_trades,
-    set_processed_candle_day,
-    should_process_candle_day,
+    set_processed_candle_bar,
+    should_process_candle_bar,
 )
 from shared.logging_utils import get_logger
 from shared.oanda_client import OandaClient
@@ -113,23 +113,31 @@ def main(cfg: dict | None = None) -> None:
     settings = load_settings()
     bot_id = str(cfg.get("bot_id", "SLINGSHOT"))
     account_id = require_account_id(cfg)
+    timeframe = cfg_timeframe(cfg, default_timeframe="D")
     instruments = cfg_instruments(cfg, settings.instrument)
     client = OandaClient(
         base_url=settings.base_url,
         api_key=settings.oanda_api_key,
         account_id=account_id,
         bot_id=bot_id,
+        timeframe=timeframe,
     )
+    last_processed_bar_by_instrument: dict[str, pd.Timestamp] = {}
 
     while True:
         try:
-            time.sleep(seconds_until_next_close("D") + 1)
+            time.sleep(seconds_until_next_close(timeframe) + 1)
             reconcile_closed_trades(bot_id, client)
             for instrument in instruments:
-                bars = candles_to_df(client.get_candles(instrument=instrument, granularity="D", count=500))
+                bars = candles_to_df(client.get_candles(instrument=instrument, granularity=timeframe, count=500))
                 latest = bars.index[-1]
-                key = last_processed_day_key(instrument, "_slingshot")
-                if not should_process_candle_day(bot_id, key, latest):
+                key = last_processed_bar_key(instrument, timeframe, "_slingshot")
+                if not should_process_candle_bar(
+                    bot_id,
+                    key,
+                    latest,
+                    last_processed_bar_time=last_processed_bar_by_instrument.get(instrument),
+                ):
                     continue
 
                 state_key = f"slingshot_state_{instrument}"
@@ -151,7 +159,8 @@ def main(cfg: dict | None = None) -> None:
                     ]
                     if not open_trades:
                         kv_set(bot_id, state_key, "")
-                        set_processed_candle_day(bot_id, key, latest)
+                        set_processed_candle_bar(bot_id, key, latest)
+                        last_processed_bar_by_instrument[instrument] = latest
                         continue
 
                     trade_id = str(open_trades[0].get("id"))
@@ -166,7 +175,8 @@ def main(cfg: dict | None = None) -> None:
                     if high_t >= stop_px:
                         client.close_trade(trade_id)
                         kv_set(bot_id, state_key, "")
-                        set_processed_candle_day(bot_id, key, latest)
+                        set_processed_candle_bar(bot_id, key, latest)
+                        last_processed_bar_by_instrument[instrument] = latest
                         continue
 
                     # first target and subsequent multiples
@@ -223,8 +233,8 @@ def main(cfg: dict | None = None) -> None:
                                 },
                             )
 
-                set_processed_candle_day(bot_id, key, latest)
+                set_processed_candle_bar(bot_id, key, latest)
+                last_processed_bar_by_instrument[instrument] = latest
         except Exception as e:
             log.exception("SLINGSHOT_ERROR | bot_id=%s | account_id=%s | err=%s", bot_id, account_id, e)
             time.sleep(5)
-

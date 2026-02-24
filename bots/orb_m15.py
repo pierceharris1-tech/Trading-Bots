@@ -107,6 +107,7 @@ def main(cfg: dict | None = None) -> None:
         api_key=settings.oanda_api_key,
         account_id=account_id,
         bot_id=bot_id,
+        timeframe=str(cfg.get("timeframe", settings.granularity)).strip().upper(),
     )
 
     last_processed_candle: pd.Timestamp | None = None

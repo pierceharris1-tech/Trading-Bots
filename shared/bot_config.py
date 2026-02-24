@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from shared.time_utils import granularity_to_seconds
+
 
 def require_account_id(cfg: dict) -> str:
     account_id = str(cfg.get("account_id", "")).strip()
@@ -21,3 +23,10 @@ def cfg_instruments(cfg: dict, default_instrument: str) -> list[str]:
         raise RuntimeError("No instrument configured")
     return [single]
 
+
+def cfg_timeframe(cfg: dict, default_timeframe: str = "D") -> str:
+    timeframe = str(cfg.get("timeframe", default_timeframe)).strip().upper()
+    if not timeframe:
+        timeframe = default_timeframe
+    granularity_to_seconds(timeframe)
+    return timeframe

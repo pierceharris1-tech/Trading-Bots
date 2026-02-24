@@ -19,6 +19,12 @@ OANDA trading bots driven by `config/bots.yaml`.
 - Supported strategies: `orb_m15`, `channel_breakout_daily`, `conqueror_fx_daily`, `inside_days_daily`, `slingshot_daily`.
 - Runtime equity/state is persisted in `state/bot_state.db`.
 - Per-bot OANDA account routing is configured via `account_id` in `config/bots.yaml`.
+- Strategy `timeframe` is used as OANDA candle granularity (for daily strategies this defaults to `D` if omitted).
+
+## OANDA Trade Attribution Tags
+- All placed orders now include OANDA `clientExtensions.tag` and `tradeClientExtensions.tag`.
+- Tag format is: `{bot_id}|{timeframe}`.
+- To attribute fills/trades in OANDA, inspect transactions/trades for `clientExtensions.tag` (or `tradeClientExtensions.tag`) and group by that value.
 
 ## Deployment
 - Run under `systemd` with:

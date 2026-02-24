@@ -6,15 +6,15 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from shared.bot_config import cfg_instruments, require_account_id
+from shared.bot_config import cfg_instruments, cfg_timeframe, require_account_id
 from shared.config import load_settings
 from shared.daily_engine import (
     kv_json_get,
     kv_json_set,
-    last_processed_day_key,
+    last_processed_bar_key,
     reconcile_closed_trades,
-    set_processed_candle_day,
-    should_process_candle_day,
+    set_processed_candle_bar,
+    should_process_candle_bar,
 )
 from shared.indicators import adx, sma
 from shared.logging_utils import get_logger
@@ -236,8 +236,7 @@ def _process_reversal_days(
     if pos is not None:
         side = int(pos["side"])
         stop_px = float(pos["stop_px"])
-        entry_day = str(pos["entry_day"])
-        todays_day = latest.date().isoformat()
+        entry_bar = pd.to_datetime(str(pos["entry_bar"]), utc=True)
         low_t = float(bars["low"].iloc[t_idx])
         high_t = float(bars["high"].iloc[t_idx])
 
@@ -275,7 +274,7 @@ def _process_reversal_days(
                         "trade_id": placed.get("trade_id"),
                         "order_id": placed.get("order_id"),
                         "open_time": latest.isoformat(),
-                        "entry_day": todays_day,
+                        "entry_bar": latest.isoformat(),
                         "side": flip_side,
                         "entry_price": entry_px,
                         "stop_px": flip_stop,
@@ -284,7 +283,7 @@ def _process_reversal_days(
             return
 
         # close on t+1 close
-        if todays_day > entry_day:
+        if latest > entry_bar:
             _close_position(bot_id, client, pos, latest)
             kv_set(bot_id, key, "")
         return
@@ -336,7 +335,7 @@ def _process_reversal_days(
             "trade_id": placed.get("trade_id"),
             "order_id": placed.get("order_id"),
             "open_time": latest.isoformat(),
-            "entry_day": latest.date().isoformat(),
+            "entry_bar": latest.isoformat(),
             "side": side,
             "entry_price": close_t,
             "stop_px": stop_px,
@@ -350,6 +349,7 @@ def main(cfg: dict | None = None) -> None:
     settings = load_settings()
     bot_id = str(cfg.get("bot_id", "CHANNEL_BREAKOUT"))
     account_id = require_account_id(cfg)
+    timeframe = cfg_timeframe(cfg, default_timeframe="D")
     sub_strategy = str(cfg.get("sub_strategy", "channel_breakout")).strip().lower()
     if sub_strategy not in {"channel_breakout", "reversal_days"}:
         raise RuntimeError(f"Unsupported sub_strategy={sub_strategy}")
@@ -359,19 +359,26 @@ def main(cfg: dict | None = None) -> None:
         api_key=settings.oanda_api_key,
         account_id=account_id,
         bot_id=bot_id,
+        timeframe=timeframe,
     )
     instruments = cfg_instruments(cfg, settings.instrument)
+    last_processed_bar_by_instrument: dict[str, pd.Timestamp] = {}
 
     while True:
         try:
-            time.sleep(seconds_until_next_close("D") + 1)
+            time.sleep(seconds_until_next_close(timeframe) + 1)
             reconcile_closed_trades(bot_id, client)
             for instrument in instruments:
-                candles = client.get_candles(instrument=instrument, granularity="D", count=400)
+                candles = client.get_candles(instrument=instrument, granularity=timeframe, count=400)
                 bars = candles_to_df(candles)
                 latest = bars.index[-1]
-                process_key = last_processed_day_key(instrument, f"_{sub_strategy}")
-                if not should_process_candle_day(bot_id, process_key, latest):
+                process_key = last_processed_bar_key(instrument, timeframe, f"_{sub_strategy}")
+                if not should_process_candle_bar(
+                    bot_id,
+                    process_key,
+                    latest,
+                    last_processed_bar_time=last_processed_bar_by_instrument.get(instrument),
+                ):
                     continue
 
                 if sub_strategy == "reversal_days":
@@ -392,8 +399,8 @@ def main(cfg: dict | None = None) -> None:
                         bars=bars,
                         cfg=cfg,
                     )
-                set_processed_candle_day(bot_id, process_key, latest)
+                set_processed_candle_bar(bot_id, process_key, latest)
+                last_processed_bar_by_instrument[instrument] = latest
         except Exception as e:
             log.exception("CHANNEL_BREAKOUT_ERROR | bot_id=%s | account_id=%s | err=%s", bot_id, account_id, e)
             time.sleep(5)
-

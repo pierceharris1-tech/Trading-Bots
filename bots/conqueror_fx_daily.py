@@ -5,15 +5,15 @@ import time
 
 import pandas as pd
 
-from shared.bot_config import cfg_instruments, require_account_id
+from shared.bot_config import cfg_instruments, cfg_timeframe, require_account_id
 from shared.config import load_settings
 from shared.daily_engine import (
     kv_json_get,
     kv_json_set,
-    last_processed_day_key,
+    last_processed_bar_key,
     reconcile_closed_trades,
-    set_processed_candle_day,
-    should_process_candle_day,
+    set_processed_candle_bar,
+    should_process_candle_bar,
 )
 from shared.indicators import atr, sma
 from shared.logging_utils import get_logger
@@ -214,23 +214,31 @@ def main(cfg: dict | None = None) -> None:
     settings = load_settings()
     bot_id = str(cfg.get("bot_id", "CONQUEROR_FX"))
     account_id = require_account_id(cfg)
+    timeframe = cfg_timeframe(cfg, default_timeframe="D")
     instruments = cfg_instruments(cfg, settings.instrument)
     client = OandaClient(
         base_url=settings.base_url,
         api_key=settings.oanda_api_key,
         account_id=account_id,
         bot_id=bot_id,
+        timeframe=timeframe,
     )
+    last_processed_bar_by_instrument: dict[str, pd.Timestamp] = {}
 
     while True:
         try:
-            time.sleep(seconds_until_next_close("D") + 1)
+            time.sleep(seconds_until_next_close(timeframe) + 1)
             reconcile_closed_trades(bot_id, client)
             for instrument in instruments:
-                bars = candles_to_df(client.get_candles(instrument=instrument, granularity="D", count=300))
+                bars = candles_to_df(client.get_candles(instrument=instrument, granularity=timeframe, count=300))
                 latest = bars.index[-1]
-                key = last_processed_day_key(instrument, "_conqueror")
-                if not should_process_candle_day(bot_id, key, latest):
+                key = last_processed_bar_key(instrument, timeframe, "_conqueror")
+                if not should_process_candle_bar(
+                    bot_id,
+                    key,
+                    latest,
+                    last_processed_bar_time=last_processed_bar_by_instrument.get(instrument),
+                ):
                     continue
                 _process_instrument(
                     bot_id=bot_id,
@@ -240,8 +248,8 @@ def main(cfg: dict | None = None) -> None:
                     bars=bars,
                     cfg=cfg,
                 )
-                set_processed_candle_day(bot_id, key, latest)
+                set_processed_candle_bar(bot_id, key, latest)
+                last_processed_bar_by_instrument[instrument] = latest
         except Exception as e:
             log.exception("CONQUEROR_ERROR | bot_id=%s | account_id=%s | err=%s", bot_id, account_id, e)
             time.sleep(5)
-

@@ -15,6 +15,10 @@ STRATEGY_MAP = {
 }
 
 
+def _default_timeframe_for_strategy(strategy: str) -> str:
+    return "M15" if strategy == "orb_m15" else "D"
+
+
 def main():
     if len(sys.argv) < 2:
         raise SystemExit("No bot_id provided. Usage: python -m bots.runner <BOT_ID>")
@@ -34,6 +38,9 @@ def main():
     strategy = str(cfg.get("strategy", "")).strip()
     if strategy not in STRATEGY_MAP:
         raise SystemExit(f"Unknown strategy '{strategy}'. Options: {list(STRATEGY_MAP.keys())}")
+
+    raw_timeframe = str(cfg.get("timeframe", "")).strip().upper()
+    cfg["timeframe"] = raw_timeframe or _default_timeframe_for_strategy(strategy)
 
     mod_path = STRATEGY_MAP[strategy]
     mod = importlib.import_module(mod_path)

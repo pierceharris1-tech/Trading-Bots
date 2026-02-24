@@ -40,6 +40,26 @@ def set_processed_candle_day(bot_id: str, key: str, latest_day: pd.Timestamp) ->
     kv_set(bot_id, key, latest_day.date().isoformat())
 
 
+def last_processed_bar_key(instrument: str, timeframe: str, suffix: str = "") -> str:
+    tf = str(timeframe).strip().upper()
+    return f"bar_last_processed_{tf}_{instrument}{suffix}"
+
+
+def should_process_candle_bar(
+    bot_id: str,
+    key: str,
+    latest_bar: pd.Timestamp,
+    last_processed_bar_time: pd.Timestamp | None = None,
+) -> bool:
+    if last_processed_bar_time is not None and latest_bar <= last_processed_bar_time:
+        return False
+    return kv_get(bot_id, key) != latest_bar.isoformat()
+
+
+def set_processed_candle_bar(bot_id: str, key: str, latest_bar: pd.Timestamp) -> None:
+    kv_set(bot_id, key, latest_bar.isoformat())
+
+
 def reconcile_closed_trades(bot_id: str, client: OandaClient) -> None:
     open_rows = trade_open_rows(bot_id)
     if not open_rows:
@@ -66,4 +86,3 @@ def reconcile_closed_trades(bot_id: str, client: OandaClient) -> None:
             duration_seconds=max(0, dur),
             realized_pnl=realized,
         )
-

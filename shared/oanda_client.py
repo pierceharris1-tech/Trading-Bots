@@ -8,11 +8,25 @@ from shared.logging_utils import get_logger
 log = get_logger("shared.oanda_client")
 
 
+def build_order_tag(bot_id: str, timeframe: str) -> str:
+    bot = str(bot_id or "UNKNOWN_BOT").strip()
+    tf = str(timeframe or "UNKNOWN_TF").strip().upper()
+    return f"{bot}|{tf}"
+
+
 class OandaClient:
-    def __init__(self, base_url: str, api_key: str, account_id: str, bot_id: str = "UNKNOWN_BOT") -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        account_id: str,
+        bot_id: str = "UNKNOWN_BOT",
+        timeframe: str = "UNKNOWN_TF",
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.account_id = account_id
         self.bot_id = bot_id
+        self.order_tag = build_order_tag(bot_id=bot_id, timeframe=timeframe)
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -20,6 +34,9 @@ class OandaClient:
                 "Content-Type": "application/json",
             }
         )
+
+    def _order_extensions(self) -> dict[str, str]:
+        return {"tag": self.order_tag}
 
     def _request(
         self,
@@ -92,6 +109,8 @@ class OandaClient:
             "units": str(int(units)),
             "timeInForce": "FOK",
             "positionFill": "DEFAULT",
+            "clientExtensions": self._order_extensions(),
+            "tradeClientExtensions": self._order_extensions(),
         }
 
         # Attach SL/TP if provided
@@ -119,6 +138,7 @@ class OandaClient:
                 "units": int(units),
                 "stop_loss": stop_loss,
                 "take_profit": take_profit,
+                "tag": self.order_tag,
             },
         )
 
@@ -142,6 +162,8 @@ class OandaClient:
             "price": str(float(price)),
             "timeInForce": time_in_force,
             "positionFill": "DEFAULT",
+            "clientExtensions": self._order_extensions(),
+            "tradeClientExtensions": self._order_extensions(),
         }
 
         if take_profit is not None:
@@ -169,6 +191,7 @@ class OandaClient:
                 "price": price,
                 "stop_loss": stop_loss,
                 "take_profit": take_profit,
+                "tag": self.order_tag,
             },
         )
 
@@ -189,6 +212,8 @@ class OandaClient:
             "price": str(float(price)),
             "timeInForce": time_in_force,
             "positionFill": "DEFAULT",
+            "clientExtensions": self._order_extensions(),
+            "tradeClientExtensions": self._order_extensions(),
         }
         if take_profit is not None:
             order["takeProfitOnFill"] = {"price": str(float(take_profit)), "timeInForce": "GTC"}
@@ -207,6 +232,7 @@ class OandaClient:
                 "price": price,
                 "stop_loss": stop_loss,
                 "take_profit": take_profit,
+                "tag": self.order_tag,
             },
         )
 
