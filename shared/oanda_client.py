@@ -7,6 +7,8 @@ from shared.logging_utils import get_logger
 
 log = get_logger("shared.oanda_client")
 
+from decimal import Decimal, ROUND_HALF_UP
+
 
 def build_order_tag(bot_id: str, timeframe: str) -> str:
     bot = str(bot_id or "UNKNOWN_BOT").strip()
@@ -34,9 +36,51 @@ class OandaClient:
                 "Content-Type": "application/json",
             }
         )
+        # Cache instrument -> displayPrecision (int)
+        self._precision_cache: dict[str, int] = {}
+
 
     def _order_extensions(self) -> dict[str, str]:
         return {"tag": self.order_tag}
+
+    def _get_display_precision(self, instrument: str) -> int:
+        """
+        Fetch and cache OANDA displayPrecision for an instrument.
+        Used to format TP/SL/price strings to avoid precision rejection.
+        """
+        inst = str(instrument).strip()
+        if inst in self._precision_cache:
+            return self._precision_cache[inst]
+
+        data = self._request(
+            "GET",
+            f"/v3/accounts/{self.account_id}/instruments",
+            context={
+                "account_id": self.account_id,
+                "instrument": inst,
+                "order_type": "NONE",
+                "units": 0,
+            },
+        )
+        instruments = data.get("instruments") or []
+        match = next((x for x in instruments if x.get("name") == inst), None)
+        if not match:
+            prec = 1
+        else:
+            prec = int(match.get("displayPrecision", 1))
+
+        self._precision_cache[inst] = prec
+        return prec
+
+    def _fmt_price(self, instrument: str, price: float) -> str:
+        """
+        Format a price as a string with the instrument's displayPrecision,
+        avoiding float artifacts (e.g. 10967.699999999997).
+        """
+        prec = self._get_display_precision(instrument)
+        q = Decimal("1") if prec <= 0 else Decimal("1").scaleb(-prec)  # 10^-prec
+        d = Decimal(str(price)).quantize(q, rounding=ROUND_HALF_UP)
+        return format(d, "f")
 
     def _request(
         self,
@@ -116,13 +160,13 @@ class OandaClient:
         # Attach SL/TP if provided
         if take_profit is not None:
             order["takeProfitOnFill"] = {
-                "price": str(float(take_profit)),
+                "price": self._fmt_price(instrument, float(take_profit)),
                 "timeInForce": "GTC",
             }
 
         if stop_loss is not None:
             order["stopLossOnFill"] = {
-                "price": str(float(stop_loss)),
+                "price": self._fmt_price(instrument, float(stop_loss)),
                 "timeInForce": "GTC",
             }
 
@@ -159,7 +203,7 @@ class OandaClient:
             "type": "LIMIT",
             "instrument": instrument,
             "units": str(int(units)),
-            "price": str(float(price)),
+            "price": self._fmt_price(instrument, float(price)),
             "timeInForce": time_in_force,
             "positionFill": "DEFAULT",
             "clientExtensions": self._order_extensions(),
@@ -168,13 +212,13 @@ class OandaClient:
 
         if take_profit is not None:
             order["takeProfitOnFill"] = {
-                "price": str(float(take_profit)),
+                "price": self._fmt_price(instrument, float(take_profit)),
                 "timeInForce": "GTC",
             }
 
         if stop_loss is not None:
             order["stopLossOnFill"] = {
-                "price": str(float(stop_loss)),
+                "price": self._fmt_price(instrument, float(stop_loss)),
                 "timeInForce": "GTC",
             }
 
@@ -209,16 +253,16 @@ class OandaClient:
             "type": "STOP",
             "instrument": instrument,
             "units": str(int(units)),
-            "price": str(float(price)),
+            "price": self._fmt_price(instrument, float(price)),
             "timeInForce": time_in_force,
             "positionFill": "DEFAULT",
             "clientExtensions": self._order_extensions(),
             "tradeClientExtensions": self._order_extensions(),
         }
         if take_profit is not None:
-            order["takeProfitOnFill"] = {"price": str(float(take_profit)), "timeInForce": "GTC"}
+            order["takeProfitOnFill"] = {"price": self._fmt_price(instrument, float(take_profit)), "timeInForce": "GTC"}
         if stop_loss is not None:
-            order["stopLossOnFill"] = {"price": str(float(stop_loss)), "timeInForce": "GTC"}
+            order["stopLossOnFill"] = {"price": self._fmt_price(instrument, float(stop_loss)), "timeInForce": "GTC"}
         payload = {"order": order}
         return self._request(
             "POST",
