@@ -51,14 +51,30 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
-def get_equity(bot_id: str) -> float:
+def get_equity(bot_id: str, client=None) -> float:
+    """
+    Returns live account NAV from OANDA if client is provided.
+    Falls back to DB value if no client given.
+    Always use client= in live bots for accurate position sizing.
+    """
+    if client is not None:
+        try:
+            nav = client.get_account_nav()
+            return nav
+        except Exception as e:
+            import logging
+            logging.getLogger("shared.state_store").warning(
+                f"get_equity: failed to fetch live NAV, falling back to DB | err={e}"
+            )
     with _connect() as conn:
         row = conn.execute(
             "SELECT equity FROM bot_state WHERE bot_id = ?",
             (bot_id,),
         ).fetchone()
         if row is None:
-            raise KeyError(f"bot_id not found in bot_state: {bot_id}")
+            raise KeyError(
+                f"get_equity: no client provided and bot_id not found: {bot_id}"
+            )
         return float(row["equity"])
 
 

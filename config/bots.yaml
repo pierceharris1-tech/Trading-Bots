@@ -172,20 +172,6 @@ CONQUEROR_FX:
     - NZD_USD
     - EUR_GBP
 
-INSIDE_DAYS:
-  account_id: 101-004-27287318-005
-  strategy: inside_days_daily
-  timeframe: D
-  instruments:
-    - AUD_USD
-    - GBP_USD
-    - XAU_USD
-    - USD_JPY
-    - EUR_USD
-    - USD_CAD
-    - NZD_USD
-    - EUR_GBP
-
 SLINGSHOT:
   account_id: 101-004-27287318-006
   strategy: slingshot_daily
@@ -199,3 +185,30 @@ SLINGSHOT:
     - USD_CAD
     - NZD_USD
     - EUR_GBP
+
+
+GOLD_5AM_BREAKOUT:
+  account_id: 001-004-10576609-001
+  instrument: XAU_USD
+  strategy: gold_5am_breakout
+  dry_run: false
+  risk_pct: 0.03
+  leverage: 30.0
+
+INSIDE_DAYS:
+  dry_run: false
+  account_id: 001-004-10576609-001
+  strategy: inside_days_daily
+  timeframe: D
+  risk_pct: 0.01
+  leverage: 20.0
+  tp_r: 3.0
+  instruments:
+    - AUD_USD
+    - GBP_USD
+    - USD_JPY
+    - EUR_USD
+    - USD_CAD
+    - NZD_USD
+    - EUR_GBP
+    - XAU_USD

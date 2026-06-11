@@ -111,6 +111,30 @@ class OandaClient:
             )
         return r.json()
 
+
+    def get_account_nav(self) -> float:
+        """
+        Fetch live account NAV (Net Asset Value) from OANDA.
+        This is the true account value including unrealised P&L.
+        Used for real-time position sizing.
+        """
+        data = self._request(
+            "GET",
+            f"/v3/accounts/{self.account_id}/summary",
+            context={
+                "account_id": self.account_id,
+                "order_type": "ACCOUNT_SUMMARY",
+                "units": 0,
+            },
+        )
+        account = data.get("account", {})
+        nav = account.get("NAV") or account.get("balance")
+        if nav is None:
+            raise RuntimeError(
+                f"Could not read NAV from account summary: {account}"
+            )
+        return float(nav)
+
     def get_candles(self, instrument: str, granularity: str, count: int = 100) -> dict[str, Any]:
         params = {
             "granularity": granularity,
@@ -316,3 +340,38 @@ class OandaClient:
             f"/v3/accounts/{self.account_id}/trades/{trade_id}",
             context={"account_id": self.account_id, "order_type": "GET_TRADE", "trade_id": trade_id, "units": 0},
         )
+
+    def get_price(self, instrument: str) -> dict[str, float] | None:
+        """Returns current bid/ask for an instrument."""
+        resp = self._request(
+            "GET",
+            f"/v3/accounts/{self.account_id}/pricing",
+            params={"instruments": instrument},
+            context={"account_id": self.account_id, "order_type": "GET_PRICE", "units": 0},
+        )
+        prices = resp.get("prices", [])
+        if not prices:
+            return None
+        return {
+            "bid": float(prices[0]["bids"][0]["price"]),
+            "ask": float(prices[0]["asks"][0]["price"]),
+        }
+
+    def modify_trade(self, trade_id: str, stop_loss: float) -> dict[str, Any]:
+        """Modify an open trade's stop loss."""
+        payload = {
+            "stopLoss": {
+                "price": str(round(stop_loss, 5)),
+                "timeInForce": "GTC",
+            }
+        }
+        return self._request(
+            "PUT",
+            f"/v3/accounts/{self.account_id}/trades/{trade_id}/orders",
+            payload=payload,
+            context={"account_id": self.account_id, "order_type": "MODIFY_TRADE", "units": 0},
+        )
+
+    def close_trade_partial(self, trade_id: str, units: int) -> dict[str, Any]:
+        """Close a partial number of units on an open trade."""
+        return self.close_trade(trade_id, units=str(abs(units)))
