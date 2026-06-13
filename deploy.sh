@@ -21,21 +21,29 @@ fi
 echo "== Restarting enabled trading-bot@ instances =="
 
 # Enabled units show up as symlinks in multi-user.target.wants
-mapfile -t UNITS < <(
+mapfile -t LIVE_UNITS < <(
   find /etc/systemd/system/multi-user.target.wants \
     -maxdepth 1 -type l -name 'trading-bot@*.service' -printf '%f\n' \
     | sort
 )
 
-if [ "${#UNITS[@]}" -eq 0 ]; then
+mapfile -t PRACTICE_UNITS < <(
+  find /etc/systemd/system/multi-user.target.wants \
+    -maxdepth 1 -type l -name 'trading-bot-practice@*.service' -printf '%f\n' \
+    | sort
+)
+
+ALL_UNITS=("${LIVE_UNITS[@]}" "${PRACTICE_UNITS[@]}")
+
+if [ "${#ALL_UNITS[@]}" -eq 0 ]; then
   echo "No enabled trading-bot@*.service units found. Nothing to restart."
   exit 0
 fi
 
-for unit in "${UNITS[@]}"; do
+for unit in "${ALL_UNITS[@]}"; do
   echo "Restarting: $unit"
   sudo systemctl restart "$unit"
 done
 
 echo "== Status (enabled units) =="
-systemctl --no-pager --full status "${UNITS[@]}" | sed -n '1,120p'
+systemctl --no-pager --full status "${ALL_UNITS[@]}" | sed -n '1,120p'

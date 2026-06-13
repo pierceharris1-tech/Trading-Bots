@@ -1,0 +1,18 @@
+[Unit]
+Description=Trading Bot - Practice (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/trading-bots
+EnvironmentFile=/etc/qtp/oanda-practice.env
+ExecStart=/home/ubuntu/trading-bots/.venv/bin/python -m bots.runner %i
+Restart=always
+RestartSec=15s
+StandardOutput=append:/home/ubuntu/logs/bots/practice-%i.log
+StandardError=append:/home/ubuntu/logs/bots/practice-%i.log
+
+[Install]
+WantedBy=multi-user.target

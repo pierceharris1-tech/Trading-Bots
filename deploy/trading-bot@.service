@@ -1,0 +1,18 @@
+[Unit]
+Description=Trading Bot - Live (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/trading-bots
+EnvironmentFile=/etc/qtp/oanda.env
+ExecStart=/home/ubuntu/trading-bots/.venv/bin/python -m bots.runner %i
+Restart=always
+RestartSec=15s
+StandardOutput=append:/home/ubuntu/logs/bots/%i.log
+StandardError=append:/home/ubuntu/logs/bots/%i.log
+
+[Install]
+WantedBy=multi-user.target
