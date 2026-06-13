@@ -17,6 +17,7 @@ STRATEGY_MAP = {
     "conqueror_fx_daily": "bots.conqueror_fx_daily",
     "inside_days_daily": "bots.inside_days_daily",
     "slingshot_daily": "bots.slingshot_daily",
+    "gold_5am_breakout": "bots.gold_5am_breakout",
 }
 
 

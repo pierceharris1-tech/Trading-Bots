@@ -188,7 +188,7 @@ SLINGSHOT:
 
 
 GOLD_5AM_BREAKOUT:
-  account_id: 001-004-10576609-001
+  account_id: 101-004-27287318-005
   instrument: XAU_USD
   strategy: gold_5am_breakout
   dry_run: false
@@ -197,7 +197,7 @@ GOLD_5AM_BREAKOUT:
 
 INSIDE_DAYS:
   dry_run: false
-  account_id: 001-004-10576609-001
+  account_id: 101-004-27287318-005
   strategy: inside_days_daily
   timeframe: D
   risk_pct: 0.01
