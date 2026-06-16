@@ -138,6 +138,7 @@ def main(cfg: dict | None = None) -> None:
 
             for instrument in instruments:
                 try:
+                    process_key = None
                     bars   = candles_to_df(client.get_candles(
                         instrument=instrument, granularity=timeframe, count=10))
                     latest = bars.index[-1]
@@ -349,8 +350,9 @@ def main(cfg: dict | None = None) -> None:
                     )
 
                 finally:
-                    set_processed_candle_bar(bot_id, process_key, latest
-                                             if 'latest' in dir() else pd.Timestamp.now())
+                    if process_key is not None:
+                        set_processed_candle_bar(bot_id, process_key, latest
+                                                 if 'latest' in dir() else pd.Timestamp.now())
                     last_processed_bar_by_instrument[instrument] = (
                         latest if 'latest' in dir() else pd.Timestamp.now())
 
