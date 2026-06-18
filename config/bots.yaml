@@ -131,7 +131,7 @@ CHANNEL_BREAKOUT:
   account_id: 101-004-27287318-003
   strategy: channel_breakout_daily
   timeframe: D
-  dry_run: true
+  dry_run: false
   rejection_rule: true
   instruments:
     - AUD_USD
@@ -163,7 +163,7 @@ CONQUEROR_FX:
   account_id: 101-004-27287318-004
   strategy: conqueror_fx_daily
   timeframe: D
-  dry_run: true
+  dry_run: false
   variant: I
   instruments:
     - AUD_USD
@@ -179,7 +179,7 @@ SLINGSHOT:
   account_id: 101-004-27287318-006
   strategy: slingshot_daily
   timeframe: D
-  dry_run: true
+  dry_run: false
   instruments:
     - AUD_USD
     - GBP_USD
@@ -195,12 +195,12 @@ GOLD_5AM_BREAKOUT:
   account_id: 101-004-27287318-005
   instrument: XAU_USD
   strategy: gold_5am_breakout
-  dry_run: true
+  dry_run: false
   risk_pct: 0.03
   leverage: 30.0
 
 INSIDE_DAYS:
-  dry_run: true
+  dry_run: false
   account_id: 101-004-27287318-005
   strategy: inside_days_daily
   timeframe: D
