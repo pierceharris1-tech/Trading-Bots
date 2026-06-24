@@ -17,7 +17,7 @@ from shared.state_store import (
 
 def kv_json_get(bot_id: str, key: str) -> dict[str, Any] | None:
     raw = kv_get(bot_id, key)
-    if raw is None:
+    if not raw:
         return None
     return json.loads(raw)
 

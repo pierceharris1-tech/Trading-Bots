@@ -45,7 +45,8 @@ def _all_aligned(side: int, a: float, b: float, c: float) -> bool:
 
 def _close_trade(bot_id: str, client: OandaClient, pos: dict, now_ts: pd.Timestamp) -> None:
     trade_id = str(pos.get("trade_id", ""))
-    if not trade_id:
+    if not trade_id or trade_id == "None":
+        log.warning("Skipping close — trade_id is None for bot_id=%s", bot_id)
         return
     resp = client.close_trade(trade_id)
     realized = parse_realized_pl(resp)

@@ -29,7 +29,8 @@ log = get_logger("bot.channel_breakout_daily")
 
 def _close_position(bot_id: str, client: OandaClient, state: dict, now_ts: pd.Timestamp) -> None:
     trade_id = str(state.get("trade_id", ""))
-    if not trade_id:
+    if not trade_id or trade_id == "None":
+        log.warning("Skipping close — trade_id is None for bot_id=%s", bot_id)
         return
     close_resp = client.close_trade(trade_id)
     realized = parse_realized_pl(close_resp)

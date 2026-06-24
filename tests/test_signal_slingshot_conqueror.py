@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import unittest
+import unittest.mock
 
 import pandas as pd
 
 from bots.slingshot_daily import _find_pattern, _swing_highs, _swing_lows
-from bots.conqueror_fx_daily import _all_aligned, _signal_triplet
+from bots.conqueror_fx_daily import _all_aligned, _close_trade, _signal_triplet
 from shared.indicators import sma, atr
 
 
@@ -222,6 +223,31 @@ class TestInsideDaysCondition(unittest.TestCase):
         self.assertAlmostEqual(sell_tp, 93.0)
         # SL at opposite side of inside bar
         self.assertAlmostEqual(high_t - low_t, range_dist)
+
+
+class TestCloseTradeNoneTradeId(unittest.TestCase):
+    def _now(self) -> pd.Timestamp:
+        return pd.Timestamp("2022-01-02", tz="UTC")
+
+    def test_skips_when_trade_id_is_python_none(self):
+        client = unittest.mock.MagicMock()
+        pos = {"trade_id": None, "open_time": "2022-01-01T00:00:00+00:00"}
+        _close_trade("TEST", client, pos, self._now())
+        client.close_trade.assert_not_called()
+
+    def test_skips_when_trade_id_is_string_none(self):
+        client = unittest.mock.MagicMock()
+        pos = {"trade_id": "None", "open_time": "2022-01-01T00:00:00+00:00"}
+        _close_trade("TEST", client, pos, self._now())
+        client.close_trade.assert_not_called()
+
+    @unittest.mock.patch("bots.conqueror_fx_daily.trade_close_by_trade_id")
+    def test_calls_close_trade_when_trade_id_is_valid(self, _mock_db):
+        client = unittest.mock.MagicMock()
+        client.close_trade.return_value = {"orderFillTransaction": {"pl": "2.0"}}
+        pos = {"trade_id": "99", "open_time": "2022-01-01T00:00:00+00:00"}
+        _close_trade("TEST", client, pos, self._now())
+        client.close_trade.assert_called_once_with("99")
 
 
 if __name__ == "__main__":

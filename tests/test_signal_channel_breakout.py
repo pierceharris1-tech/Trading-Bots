@@ -7,9 +7,11 @@ import pandas as pd
 
 from bots.channel_breakout_daily import (
     _can_take_long_hh55,
+    _close_position,
     _process_channel_breakout,
     _process_reversal_days,
 )
+from shared.daily_engine import kv_json_get
 from shared.indicators import adx, sma
 
 
@@ -217,6 +219,46 @@ class TestIndicators(unittest.TestCase):
         df = self._make_df(100)
         result = adx(df, 14)
         self.assertEqual(len(result), len(df))
+
+
+class TestKvJsonGetEmptyRaw(unittest.TestCase):
+    @patch("shared.daily_engine.kv_get", return_value=None)
+    def test_returns_none_when_kv_returns_none(self, _mock):
+        self.assertIsNone(kv_json_get("bot1", "some_key"))
+
+    @patch("shared.daily_engine.kv_get", return_value="")
+    def test_returns_none_when_kv_returns_empty_string(self, _mock):
+        self.assertIsNone(kv_json_get("bot1", "some_key"))
+
+    @patch("shared.daily_engine.kv_get", return_value='{"x": 1}')
+    def test_returns_dict_when_kv_has_value(self, _mock):
+        result = kv_json_get("bot1", "some_key")
+        self.assertEqual(result, {"x": 1})
+
+
+class TestClosePositionNoneTradeId(unittest.TestCase):
+    def _now(self) -> pd.Timestamp:
+        return pd.Timestamp("2022-01-02", tz="UTC")
+
+    def test_skips_when_trade_id_is_python_none(self):
+        client = MagicMock()
+        pos = {"trade_id": None, "open_time": "2022-01-01T00:00:00+00:00"}
+        _close_position("TEST", client, pos, self._now())
+        client.close_trade.assert_not_called()
+
+    def test_skips_when_trade_id_is_string_none(self):
+        client = MagicMock()
+        pos = {"trade_id": "None", "open_time": "2022-01-01T00:00:00+00:00"}
+        _close_position("TEST", client, pos, self._now())
+        client.close_trade.assert_not_called()
+
+    @patch("bots.channel_breakout_daily.trade_close_by_trade_id")
+    def test_calls_close_trade_when_trade_id_is_valid(self, _mock_db):
+        client = MagicMock()
+        client.close_trade.return_value = {"orderFillTransaction": {"pl": "1.5"}}
+        pos = {"trade_id": "42", "open_time": "2022-01-01T00:00:00+00:00"}
+        _close_position("TEST", client, pos, self._now())
+        client.close_trade.assert_called_once_with("42")
 
 
 if __name__ == "__main__":
