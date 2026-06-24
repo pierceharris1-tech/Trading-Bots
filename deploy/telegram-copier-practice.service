@@ -1,0 +1,20 @@
+[Unit]
+Description=Telegram Signal Copier (Practice)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/trading-bots/telegram_copier
+EnvironmentFile=/etc/qtp/oanda.env
+Environment="OANDA_ACCOUNT_ID=101-004-27287318-005"
+Environment="OANDA_BASE_URL=https://api-fxpractice.oanda.com"
+Environment="TELEGRAM_SESSION=/etc/qtp/telegram_copier_practice"
+ExecStart=/usr/bin/python3 /home/ubuntu/trading-bots/telegram_copier/main.py
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+
