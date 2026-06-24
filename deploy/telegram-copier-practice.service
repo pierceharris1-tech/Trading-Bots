@@ -7,7 +7,7 @@ Wants=network.target
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/trading-bots/telegram_copier
-EnvironmentFile=/etc/qtp/oanda.env
+EnvironmentFile=/etc/qtp/oanda-practice.env
 Environment="OANDA_ACCOUNT_ID=101-004-27287318-005"
 Environment="OANDA_BASE_URL=https://api-fxpractice.oanda.com"
 Environment="TELEGRAM_SESSION=/etc/qtp/telegram_copier_practice"
