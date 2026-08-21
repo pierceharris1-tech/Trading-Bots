@@ -21,7 +21,7 @@ from typing import Optional
 from telethon import TelegramClient, events
 from telethon.tl.types import Message
 
-sys.path.insert(0, "/home/ubuntu/trading-bots")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from shared.oanda_client import OandaClient
 
 from signal_parser import parse_message, EntrySignal
@@ -31,11 +31,12 @@ import position_manager as pm
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 
+LOG_FILE = os.environ.get("QTP_LOG_FILE", "/home/ubuntu/logs/bots/telegram_copier.log")
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
-        logging.FileHandler("/home/ubuntu/logs/bots/telegram_copier.log"),
+        logging.FileHandler(LOG_FILE),
         logging.StreamHandler(sys.stdout),
     ]
 )
@@ -43,13 +44,28 @@ logger = logging.getLogger("telegram_copier")
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
-def _load_env(path="/etc/qtp/oanda.env"):
+def _load_env(path=None):
+    """
+    Fallback env loader for running main.py outside systemd. Normally the
+    systemd unit's EnvironmentFile= already populates the environment before
+    Python starts, in which case this is a no-op (os.environ.setdefault
+    never overwrites anything already set). If OANDA_API_KEY is still
+    missing after this runs, that's a real misconfiguration — log it loudly
+    rather than silently falling back to a possibly-wrong env file
+    (e.g. the live oanda.env instead of oanda-practice.env).
+    """
+    path = path or os.environ.get("QTP_ENV_FILE", "/etc/qtp/oanda.env")
+    already_configured = "OANDA_API_KEY" in os.environ
     if Path(path).exists():
         for line in Path(path).read_text().splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
                 os.environ.setdefault(k.strip(), v.strip())
+        if not already_configured:
+            logger.warning(f"Loaded env from fallback file {path!r} — systemd's EnvironmentFile did not set it first.")
+    elif not already_configured:
+        logger.warning(f"OANDA_API_KEY not set and fallback env file {path!r} does not exist.")
 
 _load_env()
 

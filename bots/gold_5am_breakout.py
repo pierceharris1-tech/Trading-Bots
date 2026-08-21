@@ -19,6 +19,8 @@ from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
 from shared.bot_config import require_account_id
+from shared.daily_engine import reconcile_closed_trades
+from shared.indicators import atr as _atr_series
 from shared.config import load_settings
 from shared.logging_utils import get_logger
 from shared.oanda_client import OandaClient
@@ -46,6 +48,17 @@ ATR_PERIOD           = 14     # ATR lookback candles
 # ── Helper functions ───────────────────────────────────────────────────────
 
 def get_atr(candles: pd.DataFrame, period: int = ATR_PERIOD) -> float:
+    """
+    Wraps shared.indicators.atr() (Wilder's smoothing — the same formula every
+    other bot uses) so ATR is calculated identically everywhere in this repo.
+    Falls back to a simple mean of true ranges only when there isn't enough
+    history yet for Wilder's EWM to warm up, matching this bot's original
+    early-session behaviour.
+    """
+    series = _atr_series(candles, period)
+    if not series.empty and not pd.isna(series.iloc[-1]):
+        return float(series.iloc[-1])
+
     highs  = candles['high'].values
     lows   = candles['low'].values
     closes = candles['close'].values
@@ -211,9 +224,6 @@ def main(cfg: dict | None = None) -> None:
     if cfg is None:
         cfg = {}
 
-    from dataclasses import replace
-    from shared.config import load_settings
-
     settings    = load_settings()
     bot_id      = cfg.get("bot_id", "GOLD_5AM_BREAKOUT")
     account_id  = require_account_id(cfg)
@@ -245,6 +255,8 @@ def main(cfg: dict | None = None) -> None:
                 seconds -= 300
             log.info(f"Heartbeat {now_utc.isoformat()} | sleeping {seconds}s until next 5min close")
             time.sleep(seconds + 2)
+
+            reconcile_closed_trades(bot_id, client)
 
             # ── Fetch latest 5-min candles ─────────────────────────────────
             # We need from midnight to 6am — that's max 72 candles

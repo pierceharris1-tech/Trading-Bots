@@ -7,13 +7,18 @@ import pandas as pd
 
 from shared.bot_config import require_account_id
 from shared.config import load_settings
-from shared.daily_engine import emit_order_event, emit_processed_candle, select_latest_complete_candle
+from shared.daily_engine import (
+    emit_order_event,
+    emit_processed_candle,
+    reconcile_closed_trades,
+    select_latest_complete_candle,
+)
 from shared.logging_utils import get_logger
 from shared.oanda_client import OandaClient
 from shared.time_utils import seconds_until_next_close
 from shared.risk import units_from_risk, clamp_units
-from shared.state_store import get_equity, kv_get, kv_set
-from shared.strategy_utils import candles_to_df
+from shared.state_store import get_equity, kv_get, kv_set, trade_open
+from shared.strategy_utils import candles_to_df, parse_order_ids
 
 log = get_logger("bot.orb_m15")
 
@@ -94,12 +99,14 @@ def main(cfg: dict | None = None) -> None:
         timeframe=str(cfg.get("timeframe", settings.granularity)).strip().upper(),
     )
 
-    last_processed_candle: pd.Timestamp | None = None
+    dedup_key = f"orb_last_processed_candle_{settings.instrument}_{settings.granularity}"
 
     while True:
         try:
             sleep_s = seconds_until_next_close(settings.granularity)
             time.sleep(sleep_s + 1)
+
+            reconcile_closed_trades(bot_id, client)
 
             candles = client.get_candles(settings.instrument, settings.granularity, count=250)
             decision = select_latest_complete_candle(candles.get("candles", []))
@@ -109,9 +116,10 @@ def main(cfg: dict | None = None) -> None:
             bars = candles_to_df(candles).loc[:latest]
             if bars.empty:
                 continue
-            if last_processed_candle is not None and latest <= last_processed_candle:
+            last_processed_str = kv_get(bot_id, dedup_key)
+            if last_processed_str and latest <= pd.Timestamp(last_processed_str):
                 continue
-            last_processed_candle = latest
+            kv_set(bot_id, dedup_key, latest.isoformat())
             emit_processed_candle(bot_id, settings.granularity, settings.instrument, latest)
 
             # Session timing anchored to the latest candle's trading day (in session tz)
@@ -192,7 +200,7 @@ def main(cfg: dict | None = None) -> None:
 
 
             # Position sizing using per-bot equity
-            equity = float(get_equity(bot_id))
+            equity = float(get_equity(bot_id, client=client))
             units_mag, risk_cash, margin_req = units_from_risk(
                 equity=equity,
                 risk_pct=float(cfg.get("risk_pct", 0.01)),
@@ -215,8 +223,6 @@ def main(cfg: dict | None = None) -> None:
                     stop_loss=float(stop_px),
                     take_profit=float(tp_px),
                 )
-                oid = str((resp.get("orderCreateTransaction") or {}).get("id") or "")
-                emit_order_event(event="ORDER_PLACED", bot_id=str(bot_id), timeframe=settings.granularity, instrument=settings.instrument, ref_id=oid)
             else:
                 resp = client.place_market_order(
                     units=int(units),
@@ -224,8 +230,17 @@ def main(cfg: dict | None = None) -> None:
                     stop_loss=float(stop_px),
                     take_profit=float(tp_px),
                 )
-                oid = str((resp.get("orderCreateTransaction") or {}).get("id") or (resp.get("orderFillTransaction") or {}).get("orderID") or "")
-                emit_order_event(event="ORDER_PLACED", bot_id=str(bot_id), timeframe=settings.granularity, instrument=settings.instrument, ref_id=oid)
+
+            order_id, trade_id = parse_order_ids(resp)
+            emit_order_event(event="ORDER_PLACED", bot_id=str(bot_id), timeframe=settings.granularity, instrument=settings.instrument, ref_id=str(order_id or trade_id or ""))
+            trade_open(
+                bot_id=bot_id,
+                instrument=settings.instrument,
+                account_id=account_id,
+                open_time=latest.isoformat(),
+                order_id=order_id,
+                trade_id=trade_id,
+            )
 
             kv_set(bot_id, "orb_last_trade_date", today_str)
 

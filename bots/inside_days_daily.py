@@ -167,7 +167,7 @@ def main(cfg: dict | None = None) -> None:
                             buy_entry = high_t + buf
                             sell_entry = low_t - buf
                             stop_dist = abs(buy_entry - sell_entry)
-                            equity = float(get_equity(bot_id))
+                            equity = float(get_equity(bot_id, client=client))
                             units_mag, _, _ = units_from_risk(
                                 equity=equity,
                                 risk_pct=0.01,
@@ -178,6 +178,16 @@ def main(cfg: dict | None = None) -> None:
                             total_units = clamp_units(int(units_mag))
                             leg_units = max(1, abs(total_units) // 2)
                             tp_dist = _tp_distance(instrument)
+
+                            if bool(cfg.get("dry_run", True)):
+                                log.info(
+                                    "DRY_RUN | %s | would place inside-bar bracket units=%s buy_entry=%.5f sell_entry=%.5f",
+                                    instrument, leg_units, buy_entry, sell_entry,
+                                )
+                                set_processed_candle_bar(bot_id, key, latest)
+                                last_processed_bar_by_instrument[instrument] = latest
+                                emit_processed_candle(bot_id, timeframe, instrument, latest)
+                                continue
 
                             buy1 = client.place_stop_order(
                                 units=leg_units,

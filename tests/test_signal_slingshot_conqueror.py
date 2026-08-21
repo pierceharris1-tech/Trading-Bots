@@ -232,13 +232,13 @@ class TestCloseTradeNoneTradeId(unittest.TestCase):
     def test_skips_when_trade_id_is_python_none(self):
         client = unittest.mock.MagicMock()
         pos = {"trade_id": None, "open_time": "2022-01-01T00:00:00+00:00"}
-        _close_trade("TEST", client, pos, self._now())
+        _close_trade("TEST", "D", "EUR_USD", client, pos, self._now())
         client.close_trade.assert_not_called()
 
     def test_skips_when_trade_id_is_string_none(self):
         client = unittest.mock.MagicMock()
         pos = {"trade_id": "None", "open_time": "2022-01-01T00:00:00+00:00"}
-        _close_trade("TEST", client, pos, self._now())
+        _close_trade("TEST", "D", "EUR_USD", client, pos, self._now())
         client.close_trade.assert_not_called()
 
     @unittest.mock.patch("bots.conqueror_fx_daily.trade_close_by_trade_id")
@@ -246,7 +246,7 @@ class TestCloseTradeNoneTradeId(unittest.TestCase):
         client = unittest.mock.MagicMock()
         client.close_trade.return_value = {"orderFillTransaction": {"pl": "2.0"}}
         pos = {"trade_id": "99", "open_time": "2022-01-01T00:00:00+00:00"}
-        _close_trade("TEST", client, pos, self._now())
+        _close_trade("TEST", "D", "EUR_USD", client, pos, self._now())
         client.close_trade.assert_called_once_with("99")
 
 

@@ -189,7 +189,7 @@ def _process_channel_breakout(
     breakout_level = float(hh55_t if go_long else ll55_t)
     stop_px = float(bars["low"].iloc[t_idx] if go_long else bars["high"].iloc[t_idx])
     entry_px = close_t
-    equity = float(get_equity(bot_id))
+    equity = float(get_equity(bot_id, client=client))
     units_mag, _, _ = units_from_risk(
         equity=equity,
         risk_pct=0.01,
@@ -199,6 +199,10 @@ def _process_channel_breakout(
     )
     units = clamp_units(side * int(units_mag))
     if units == 0:
+        return
+
+    if bool(cfg.get("dry_run", True)):
+        log.info("DRY_RUN | %s | would open side=%s units=%s entry=%.5f stop=%.5f", instrument, side, units, entry_px, stop_px)
         return
 
     placed = _open_market(
@@ -262,7 +266,7 @@ def _process_reversal_days(
             flip_side = -side
             flip_stop = high_t if flip_side < 0 else low_t
             entry_px = float(bars["close"].iloc[t_idx])
-            equity = float(get_equity(bot_id))
+            equity = float(get_equity(bot_id, client=client))
             units_mag, _, _ = units_from_risk(
                 equity=equity,
                 risk_pct=0.01,
@@ -271,6 +275,9 @@ def _process_reversal_days(
                 leverage=float(cfg.get("leverage", 20.0)),
             )
             units = clamp_units(flip_side * int(units_mag))
+            if units != 0 and bool(cfg.get("dry_run", True)):
+                log.info("DRY_RUN | %s | would flip-open side=%s units=%s entry=%.5f stop=%.5f", instrument, flip_side, units, entry_px, flip_stop)
+                units = 0
             if units != 0:
                 placed = _open_market(
                     bot_id=bot_id,
@@ -322,7 +329,7 @@ def _process_reversal_days(
 
     side = 1 if bull else -1
     stop_px = low_t if bull else high_t
-    equity = float(get_equity(bot_id))
+    equity = float(get_equity(bot_id, client=client))
     units_mag, _, _ = units_from_risk(
         equity=equity,
         risk_pct=0.01,
@@ -332,6 +339,10 @@ def _process_reversal_days(
     )
     units = clamp_units(side * int(units_mag))
     if units == 0:
+        return
+
+    if bool(cfg.get("dry_run", True)):
+        log.info("DRY_RUN | %s | would open side=%s units=%s entry=%.5f stop=%.5f", instrument, side, units, close_t, stop_px)
         return
 
     placed = _open_market(

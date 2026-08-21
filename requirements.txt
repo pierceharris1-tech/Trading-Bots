@@ -10,3 +10,4 @@ requests==2.32.5
 six==1.17.0
 tzdata==2025.3
 urllib3==2.6.2
+telethon  # TODO: pin to the exact version running on the EC2 (`python3 -c "import telethon; print(telethon.__version__)"` there) once confirmed

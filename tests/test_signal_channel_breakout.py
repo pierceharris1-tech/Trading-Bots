@@ -89,7 +89,7 @@ class TestChannelBreakoutSignal(unittest.TestCase):
         bars = self._make_bars_with_breakout()
         _process_channel_breakout(
             bot_id="TEST", account_id="acct-001", client=client,
-            instrument="EUR_USD", bars=bars, cfg={"leverage": 20.0},
+            instrument="EUR_USD", bars=bars, cfg={"leverage": 20.0, "dry_run": False},
         )
         client.place_market_order.assert_called_once()
         call_kwargs = client.place_market_order.call_args
@@ -168,7 +168,7 @@ class TestReversalDaysSignal(unittest.TestCase):
         bars = self._bars_with_bull_reversal()
         _process_reversal_days(
             bot_id="TEST", account_id="acct-001", client=client,
-            instrument="EUR_USD", bars=bars, cfg={"leverage": 20.0},
+            instrument="EUR_USD", bars=bars, cfg={"leverage": 20.0, "dry_run": False},
         )
         client.place_market_order.assert_called_once()
         units = client.place_market_order.call_args.kwargs["units"]
@@ -243,13 +243,13 @@ class TestClosePositionNoneTradeId(unittest.TestCase):
     def test_skips_when_trade_id_is_python_none(self):
         client = MagicMock()
         pos = {"trade_id": None, "open_time": "2022-01-01T00:00:00+00:00"}
-        _close_position("TEST", client, pos, self._now())
+        _close_position("TEST", "D", "EUR_USD", client, pos, self._now())
         client.close_trade.assert_not_called()
 
     def test_skips_when_trade_id_is_string_none(self):
         client = MagicMock()
         pos = {"trade_id": "None", "open_time": "2022-01-01T00:00:00+00:00"}
-        _close_position("TEST", client, pos, self._now())
+        _close_position("TEST", "D", "EUR_USD", client, pos, self._now())
         client.close_trade.assert_not_called()
 
     @patch("bots.channel_breakout_daily.trade_close_by_trade_id")
@@ -257,7 +257,7 @@ class TestClosePositionNoneTradeId(unittest.TestCase):
         client = MagicMock()
         client.close_trade.return_value = {"orderFillTransaction": {"pl": "1.5"}}
         pos = {"trade_id": "42", "open_time": "2022-01-01T00:00:00+00:00"}
-        _close_position("TEST", client, pos, self._now())
+        _close_position("TEST", "D", "EUR_USD", client, pos, self._now())
         client.close_trade.assert_called_once_with("42")
 
 

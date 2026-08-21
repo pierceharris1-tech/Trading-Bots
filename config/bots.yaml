@@ -18,8 +18,6 @@ ORB_LDN_M15_v1:
   tp:
     r_mult: 2.0
 
-  stop:
-    mode: or_low
 
 ORB_US_M15_v1:
   account_id: 101-004-27287318-002
@@ -41,8 +39,6 @@ ORB_US_M15_v1:
   tp:
     r_mult: 2.0
 
-  stop:
-    mode: or_low
 
 ORB_UK100_LDN_M15_v1:
   account_id: 101-004-27287318-002
@@ -64,8 +60,6 @@ ORB_UK100_LDN_M15_v1:
   tp:
     r_mult: 2.0
 
-  stop:
-    mode: symmetric
 
 
 ORB_SPX500_US_M15_v1:
@@ -88,8 +82,6 @@ ORB_SPX500_US_M15_v1:
   tp:
     r_mult: 2.0
 
-  stop:
-    mode: symmetric
 
 ORB_UK100_LDN_LIMIT_v1:
   account_id: 101-004-27287318-002
@@ -261,6 +253,7 @@ INSIDE_DAYS:
   account_id: 101-004-27287318-005
   strategy: inside_days_daily
   timeframe: D
+  dry_run: false  # explicit: this bot is live today; dry_run previously had no effect at all
   instruments:
     - AUD_USD
     - GBP_USD

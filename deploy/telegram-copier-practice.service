@@ -11,7 +11,7 @@ EnvironmentFile=/etc/qtp/oanda-practice.env
 Environment="OANDA_ACCOUNT_ID=101-004-27287318-005"
 Environment="OANDA_BASE_URL=https://api-fxpractice.oanda.com"
 Environment="TELEGRAM_SESSION=/etc/qtp/telegram_copier_practice"
-ExecStart=/usr/bin/python3 /home/ubuntu/trading-bots/telegram_copier/main.py
+ExecStart=/home/ubuntu/trading-bots/.venv/bin/python3 /home/ubuntu/trading-bots/telegram_copier/main.py
 Restart=on-failure
 RestartSec=30
 

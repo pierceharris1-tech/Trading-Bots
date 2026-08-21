@@ -217,7 +217,7 @@ def main(cfg: dict | None = None) -> None:
                         buf = pip_buffer_for_instrument(instrument)
                         entry = float(pattern["key_low_px"] - buf)
                         stop_px = float(pattern["sling_high_px"])
-                        equity = float(get_equity(bot_id))
+                        equity = float(get_equity(bot_id, client=client))
                         units_mag, _, _ = units_from_risk(
                             equity=equity,
                             risk_pct=0.01,
@@ -226,6 +226,9 @@ def main(cfg: dict | None = None) -> None:
                             leverage=float(cfg.get("leverage", 20.0)),
                         )
                         units = clamp_units(-int(units_mag))
+                        if units != 0 and bool(cfg.get("dry_run", True)):
+                            log.info("DRY_RUN | %s | would place stop order units=%s entry=%.5f stop=%.5f", instrument, units, entry, stop_px)
+                            units = 0
                         if units != 0:
                             resp = client.place_stop_order(
                                 units=units,

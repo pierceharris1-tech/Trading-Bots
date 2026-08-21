@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
-DB_PATH = Path("/home/ubuntu/trading-bots/state/bot_state.db")
+DB_PATH = Path(__file__).resolve().parents[1] / "state" / "bot_state.db"
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -17,6 +17,15 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             v TEXT NOT NULL,
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (bot_id, k)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bot_state (
+            bot_id TEXT PRIMARY KEY,
+            equity REAL NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
         """
     )

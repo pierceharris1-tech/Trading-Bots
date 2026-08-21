@@ -3,9 +3,9 @@ import yaml
 import importlib
 from pathlib import Path
 
-CONFIG_PATH = Path("/home/ubuntu/trading-bots/config/bots.yaml")
+CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "bots.yaml"
 
-# ORB-only strategy map.
+# Maps each bots.yaml "strategy" value to its module.
 STRATEGY_MAP = {
     "orb_m15": "bots.orb_m15",
     "channel_breakout_daily": "bots.channel_breakout_daily",
