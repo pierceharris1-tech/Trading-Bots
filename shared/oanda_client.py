@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import requests
 from typing import Any, Optional
 
@@ -8,6 +10,29 @@ from shared.logging_utils import get_logger
 log = get_logger("shared.oanda_client")
 
 from decimal import Decimal, ROUND_HALF_UP
+
+
+# Retry policy for _request(). Split deliberately by whether a retry can ever
+# cause a duplicate side effect (a second order, a second close):
+#
+# - 401 / 429 happen at OANDA's auth/rate-limit layer, BEFORE the request ever
+#   reaches order processing -- nothing was created or modified, so retrying
+#   these is safe for every HTTP method, including order placement and trade
+#   close. (401 specifically: confirmed transient and self-healing here --
+#   re-issuing the exact same request immediately afterward with the same
+#   token succeeds. Root cause on OANDA's side not confirmed, but the
+#   "nothing was processed" property is what makes retrying it safe.)
+# - 5xx / network-level exceptions (timeouts, connection resets) are
+#   ambiguous -- the backend may have already processed the request and only
+#   the response was lost. Auto-retrying those on a POST/PUT (place an order,
+#   close a trade, modify a trade) risks a duplicate. So those are only
+#   retried automatically for read-only GET requests; a write that hits one
+#   fails immediately and falls back to the bot's normal catch-and-continue
+#   behavior on its next loop iteration instead.
+_ALWAYS_RETRYABLE_STATUS_CODES = {401, 429}
+_READONLY_RETRYABLE_STATUS_CODES = {500, 502, 503, 504}
+_MAX_ATTEMPTS = 3
+_RETRY_BACKOFF_SECONDS = 2
 
 
 def build_order_tag(bot_id: str, timeframe: str) -> str:
@@ -92,14 +117,50 @@ class OandaClient:
         context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         url = f"{self.base_url}{path}"
-        r = self.session.request(method, url, params=params, json=payload, timeout=20)
-        if not r.ok:
+        merged_ctx = {"bot_id": self.bot_id}
+        merged_ctx.update(context or {})
+        is_readonly = method.upper() == "GET"
+
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            try:
+                r = self.session.request(method, url, params=params, json=payload, timeout=20)
+            except requests.exceptions.RequestException as exc:
+                # Network-level failure: ambiguous whether a write was applied
+                # server-side, so only auto-retry for read-only requests.
+                if is_readonly and attempt < _MAX_ATTEMPTS:
+                    log.warning(
+                        "OANDA_REQUEST_EXCEPTION | attempt=%s/%s | context=%s | err=%s | retrying (read-only)",
+                        attempt, _MAX_ATTEMPTS, merged_ctx, exc,
+                    )
+                    time.sleep(_RETRY_BACKOFF_SECONDS * attempt)
+                    continue
+                log.error(
+                    "OANDA_REQUEST_EXCEPTION | attempt=%s/%s | context=%s | err=%s | giving up",
+                    attempt, _MAX_ATTEMPTS, merged_ctx, exc,
+                )
+                raise RuntimeError(
+                    f"OANDA request failed | context={merged_ctx} | err={exc}"
+                ) from exc
+
+            if r.ok:
+                return r.json()
+
             try:
                 body = r.json()
             except Exception:
                 body = r.text
-            merged_ctx = {"bot_id": self.bot_id}
-            merged_ctx.update(context or {})
+
+            retryable = r.status_code in _ALWAYS_RETRYABLE_STATUS_CODES or (
+                is_readonly and r.status_code in _READONLY_RETRYABLE_STATUS_CODES
+            )
+            if retryable and attempt < _MAX_ATTEMPTS:
+                log.warning(
+                    "OANDA_TRANSIENT_ERROR | status=%s | attempt=%s/%s | context=%s | body=%s | retrying",
+                    r.status_code, attempt, _MAX_ATTEMPTS, merged_ctx, body,
+                )
+                time.sleep(_RETRY_BACKOFF_SECONDS * attempt)
+                continue
+
             log.error(
                 "OANDA_HTTP_ERROR | status=%s | context=%s | body=%s",
                 r.status_code,
@@ -109,7 +170,6 @@ class OandaClient:
             raise RuntimeError(
                 f"OANDA request failed | status={r.status_code} | context={merged_ctx} | body={body}"
             )
-        return r.json()
 
 
     def get_account_nav(self) -> float:
