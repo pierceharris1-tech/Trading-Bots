@@ -32,3 +32,13 @@ venv/
 state/*.db
 state/*.db-shm
 state/*.db-wal
+
+# research/exports
+exports/
+*.csv
+*.xlsx
+.ipynb_checkpoints/
+
+# local secrets
+.env
+.env.*

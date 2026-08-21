@@ -142,11 +142,41 @@ CHANNEL_BREAKOUT:
     - NZD_USD
     - EUR_GBP
 
+CHANNEL_BREAKOUT_M15:
+  account_id: 101-004-27287318-003
+  strategy: channel_breakout_daily
+  timeframe: M15
+  rejection_rule: true
+  instruments:
+    - AUD_USD
+    - GBP_USD
+    - XAU_USD
+    - USD_JPY
+    - EUR_USD
+    - USD_CAD
+    - NZD_USD
+    - EUR_GBP
+
 REVERSAL_DAYS:
   account_id: 101-004-27287318-003
   strategy: channel_breakout_daily
   sub_strategy: reversal_days
   timeframe: D
+  instruments:
+    - AUD_USD
+    - GBP_USD
+    - XAU_USD
+    - USD_JPY
+    - EUR_USD
+    - USD_CAD
+    - NZD_USD
+    - EUR_GBP
+
+REVERSAL_DAYS_M15:
+  account_id: 101-004-27287318-003
+  strategy: channel_breakout_daily
+  sub_strategy: reversal_days
+  timeframe: M15
   instruments:
     - AUD_USD
     - GBP_USD
@@ -172,6 +202,21 @@ CONQUEROR_FX:
     - NZD_USD
     - EUR_GBP
 
+CONQUEROR_FX_M15:
+  account_id: 101-004-27287318-004
+  strategy: conqueror_fx_daily
+  timeframe: M15
+  variant: I
+  instruments:
+    - AUD_USD
+    - GBP_USD
+    - XAU_USD
+    - USD_JPY
+    - EUR_USD
+    - USD_CAD
+    - NZD_USD
+    - EUR_GBP
+
 INSIDE_DAYS:
   account_id: 101-004-27287318-005
   strategy: inside_days_daily
@@ -186,10 +231,38 @@ INSIDE_DAYS:
     - NZD_USD
     - EUR_GBP
 
+INSIDE_DAYS_M15:
+  account_id: 101-004-27287318-005
+  strategy: inside_days_daily
+  timeframe: M15
+  instruments:
+    - AUD_USD
+    - GBP_USD
+    - XAU_USD
+    - USD_JPY
+    - EUR_USD
+    - USD_CAD
+    - NZD_USD
+    - EUR_GBP
+
 SLINGSHOT:
   account_id: 101-004-27287318-006
   strategy: slingshot_daily
   timeframe: D
+  instruments:
+    - AUD_USD
+    - GBP_USD
+    - XAU_USD
+    - USD_JPY
+    - EUR_USD
+    - USD_CAD
+    - NZD_USD
+    - EUR_GBP
+
+SLINGSHOT_M15:
+  account_id: 101-004-27287318-006
+  strategy: slingshot_daily
+  timeframe: M15
   instruments:
     - AUD_USD
     - GBP_USD

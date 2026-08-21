@@ -7,10 +7,13 @@ import pandas as pd
 from shared.bot_config import cfg_instruments, cfg_timeframe, require_account_id
 from shared.config import load_settings
 from shared.daily_engine import (
+    emit_order_event,
+    emit_processed_candle,
     kv_json_get,
     kv_json_set,
     last_processed_bar_key,
     reconcile_closed_trades,
+    select_latest_complete_candle,
     set_processed_candle_bar,
     should_process_candle_bar,
 )
@@ -80,8 +83,14 @@ def main(cfg: dict | None = None) -> None:
             time.sleep(seconds_until_next_close(timeframe) + 1)
             reconcile_closed_trades(bot_id, client)
             for instrument in instruments:
-                bars = candles_to_df(client.get_candles(instrument=instrument, granularity=timeframe, count=200))
-                latest = bars.index[-1]
+                candles = client.get_candles(instrument=instrument, granularity=timeframe, count=200)
+                decision = select_latest_complete_candle(candles.get("candles", []))
+                if decision is None:
+                    continue
+                latest, _ = decision
+                bars = candles_to_df(candles).loc[:latest]
+                if bars.empty:
+                    continue
                 key = last_processed_bar_key(instrument, timeframe, "_inside")
                 if not should_process_candle_bar(
                     bot_id,
@@ -107,6 +116,7 @@ def main(cfg: dict | None = None) -> None:
                         kv_set(bot_id, state_key, "")
                         set_processed_candle_bar(bot_id, key, latest)
                         last_processed_bar_by_instrument[instrument] = latest
+                        emit_processed_candle(bot_id, timeframe, instrument, latest)
                         continue
                     if up_hit or down_hit:
                         side = 1 if up_hit else -1
@@ -129,10 +139,11 @@ def main(cfg: dict | None = None) -> None:
                         for x in open_trades
                         if str(x.get("instrument")) == instrument and ((side > 0 and float(x.get("initialUnits", "0")) > 0) or (side < 0 and float(x.get("initialUnits", "0")) < 0))
                     ]
-                    # Contract 1 closes on breakout day close.
+                    # Contract 1 closes on breakout bar close.
                     if (not bool(state.get("leg1_closed"))) and latest.isoformat() == str(state.get("breakout_bar")) and side_open:
                         tid = str(side_open[0].get("id"))
                         close_resp = client.close_trade(tid)
+                        emit_order_event(event="ORDER_CLOSED", bot_id=bot_id, timeframe=timeframe, instrument=instrument, ref_id=tid)
                         _ = parse_realized_pl(close_resp)
                         state["leg1_closed"] = True
                         kv_json_set(bot_id, state_key, state)
@@ -174,6 +185,8 @@ def main(cfg: dict | None = None) -> None:
                                 price=buy_entry,
                                 stop_loss=sell_entry,
                             )
+                            b1, _ = parse_order_ids(buy1)
+                            emit_order_event(event="ORDER_PLACED", bot_id=bot_id, timeframe=timeframe, instrument=instrument, ref_id=str(b1 or ""))
                             buy2 = client.place_stop_order(
                                 units=leg_units,
                                 instrument=instrument,
@@ -181,12 +194,16 @@ def main(cfg: dict | None = None) -> None:
                                 stop_loss=sell_entry,
                                 take_profit=buy_entry + tp_dist,
                             )
+                            b2, _ = parse_order_ids(buy2)
+                            emit_order_event(event="ORDER_PLACED", bot_id=bot_id, timeframe=timeframe, instrument=instrument, ref_id=str(b2 or ""))
                             sell1 = client.place_stop_order(
                                 units=-leg_units,
                                 instrument=instrument,
                                 price=sell_entry,
                                 stop_loss=buy_entry,
                             )
+                            s1, _ = parse_order_ids(sell1)
+                            emit_order_event(event="ORDER_PLACED", bot_id=bot_id, timeframe=timeframe, instrument=instrument, ref_id=str(s1 or ""))
                             sell2 = client.place_stop_order(
                                 units=-leg_units,
                                 instrument=instrument,
@@ -194,16 +211,14 @@ def main(cfg: dict | None = None) -> None:
                                 stop_loss=buy_entry,
                                 take_profit=sell_entry - tp_dist,
                             )
-                            b1, _ = parse_order_ids(buy1)
-                            b2, _ = parse_order_ids(buy2)
-                            s1, _ = parse_order_ids(sell1)
                             s2, _ = parse_order_ids(sell2)
+                            emit_order_event(event="ORDER_PLACED", bot_id=bot_id, timeframe=timeframe, instrument=instrument, ref_id=str(s2 or ""))
                             kv_json_set(
                                 bot_id,
                                 state_key,
                                 {
                                     "mode": "pending",
-                                    "inside_day": latest.date().isoformat(),
+                                    "inside_bar": latest.isoformat(),
                                     "buy_entry": buy_entry,
                                     "sell_entry": sell_entry,
                                     "buy_orders": [x for x in [b1, b2] if x],
@@ -213,6 +228,7 @@ def main(cfg: dict | None = None) -> None:
 
                 set_processed_candle_bar(bot_id, key, latest)
                 last_processed_bar_by_instrument[instrument] = latest
+                emit_processed_candle(bot_id, timeframe, instrument, latest)
         except Exception as e:
             log.exception("INSIDE_DAYS_ERROR | bot_id=%s | account_id=%s | err=%s", bot_id, account_id, e)
             time.sleep(5)

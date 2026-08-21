@@ -7,9 +7,10 @@ import pandas as pd
 
 from shared.bot_config import require_account_id
 from shared.config import load_settings
+from shared.daily_engine import emit_order_event, emit_processed_candle, select_latest_complete_candle
 from shared.logging_utils import get_logger
 from shared.oanda_client import OandaClient
-from shared.time_utils import seconds_until_next_close, utc_now_iso
+from shared.time_utils import seconds_until_next_close
 from shared.risk import units_from_risk, clamp_units
 from shared.state_store import get_equity, kv_get, kv_set
 from shared.strategy_utils import candles_to_df
@@ -27,17 +28,6 @@ def apply_cfg_overrides(settings, cfg: dict):
         updates["dry_run"] = bool(cfg["dry_run"])
     safe_updates = {k: v for k, v in updates.items() if hasattr(settings, k)}
     return replace(settings, **safe_updates)
-
-
-def _today_session_start_utc(*, session_tz: str, start_hhmm: str) -> datetime:
-    """
-    Returns today's session start in UTC, based on the given timezone + hh:mm.
-    """
-    tz = ZoneInfo(session_tz)
-    now_local = datetime.now(tz)
-    hh, mm = [int(x) for x in start_hhmm.split(":")]
-    start_local = now_local.replace(hour=hh, minute=mm, second=0, microsecond=0)
-    return start_local.astimezone(timezone.utc)
 
 
 def _find_opening_range_candle(bars: pd.DataFrame, *, session_start_utc: datetime) -> pd.Timestamp | None:
@@ -96,12 +86,6 @@ def main(cfg: dict | None = None) -> None:
     if range_minutes != 15:
         log.warning(f"Current implementation assumes 15-minute opening range; got range_minutes={range_minutes}")
 
-    log.info(
-        f"Starting ORB | bot_id={bot_id} | env={settings.oanda_env} | "
-        f"instrument={settings.instrument} | tf={settings.granularity} | "
-        f"tz={session_tz} start={session_start} | dry_run={settings.dry_run}"
-    )
-
     client = OandaClient(
         base_url=settings.base_url,
         api_key=settings.oanda_api_key,
@@ -115,17 +99,20 @@ def main(cfg: dict | None = None) -> None:
     while True:
         try:
             sleep_s = seconds_until_next_close(settings.granularity)
-            log.info(f"Heartbeat {utc_now_iso()} | sleeping {sleep_s}s until next close")
             time.sleep(sleep_s + 1)
 
             candles = client.get_candles(settings.instrument, settings.granularity, count=250)
-            bars = candles_to_df(candles)
-
-            latest = bars.index[-1]
+            decision = select_latest_complete_candle(candles.get("candles", []))
+            if decision is None:
+                continue
+            latest, _ = decision
+            bars = candles_to_df(candles).loc[:latest]
+            if bars.empty:
+                continue
             if last_processed_candle is not None and latest <= last_processed_candle:
-                log.info("No new closed candle yet.")
                 continue
             last_processed_candle = latest
+            emit_processed_candle(bot_id, settings.granularity, settings.instrument, latest)
 
             # Session timing anchored to the latest candle's trading day (in session tz)
             latest_candle_utc = latest
@@ -137,20 +124,15 @@ def main(cfg: dict | None = None) -> None:
             now_utc = datetime.now(timezone.utc)
 
             if now_utc < session_start_utc:
-                log.info(
-                    f"ORB_WAIT_SESSION | now={now_utc.isoformat()} | session_start_utc={session_start_utc.isoformat()}"
-                )
                 continue
 
             # Find opening range candle (first M15 close at/after session start)
             or_candle_time = _find_opening_range_candle(bars, session_start_utc=session_start_utc)
             if or_candle_time is None:
-                log.info("ORB_WAIT_RANGE | no candle found after session start yet")
                 continue
 
             # If we haven't even closed the OR candle yet, wait
             if latest < or_candle_time:
-                log.info(f"ORB_WAIT_RANGE | latest={latest.isoformat()} < or_candle={or_candle_time.isoformat()}")
                 continue
 
             or_high = float(bars.loc[or_candle_time, "high"])
@@ -161,7 +143,6 @@ def main(cfg: dict | None = None) -> None:
             today_str = latest.tz_convert(ZoneInfo(session_tz)).date().isoformat()
             last_trade_date = kv_get(bot_id, "orb_last_trade_date")
             if last_trade_date == today_str:
-                log.info(f"ORB_DONE_TODAY | date={today_str} | last_trade_date={last_trade_date}")
                 continue
 
             # Breakout check on the latest closed candle (confirmation = close)
@@ -169,14 +150,7 @@ def main(cfg: dict | None = None) -> None:
             long_trigger = (last_close > (or_high + buffer_val))
             short_trigger = (last_close < (or_low - buffer_val))
 
-            if confirm != "close":
-                log.warning(f"confirm={confirm} not implemented yet; using close confirmation")
-
             if not long_trigger and not short_trigger:
-                log.info(
-                    f"ORB_NO_BREAKOUT | latest={latest.isoformat()} | close={last_close:.2f} | "
-                    f"OR=[{or_low:.2f},{or_high:.2f}]"
-                )
                 continue
 
             direction = 1 if long_trigger else -1
@@ -190,7 +164,6 @@ def main(cfg: dict | None = None) -> None:
             # ------------------------------------------------------------
             R = abs(or_high - or_low)
             if R <= 0:
-                log.info("ORB_BLOCK | invalid R (OR range is zero)")
                 continue
 
             if entry_mode == "limit_or_edge":
@@ -213,7 +186,6 @@ def main(cfg: dict | None = None) -> None:
 
                 R0 = abs(entry_px - stop_px)
                 if R0 <= 0:
-                    log.info("ORB_BLOCK | invalid R0 (entry equals stop)")
                     continue
 
                 tp_px = entry_px + direction * (r_mult * R0)
@@ -230,15 +202,7 @@ def main(cfg: dict | None = None) -> None:
             )
             units = clamp_units(direction * int(units_mag))
 
-            log.info(
-                f"ORB_SIGNAL | bot={bot_id} | side={side} | entry_model={entry_model} | latest={latest.isoformat()} | "
-                f"OR_time={or_candle_time.isoformat()} OR=[{or_low:.2f},{or_high:.2f}] | "
-                f"entry_ref={entry_px:.2f} sl={stop_px:.2f} tp={tp_px:.2f} | "
-                f"units={units} equity={equity:.2f} risk_cash={risk_cash:.2f}"
-            )
-
             if settings.dry_run:
-                log.info("DRY_RUN | skipping order placement")
                 kv_set(bot_id, "orb_last_trade_date", today_str)
                 continue
 
@@ -251,7 +215,8 @@ def main(cfg: dict | None = None) -> None:
                     stop_loss=float(stop_px),
                     take_profit=float(tp_px),
                 )
-                log.info(f"ORDER_OK | type=LIMIT | resp_keys={list(resp.keys())}")
+                oid = str((resp.get("orderCreateTransaction") or {}).get("id") or "")
+                emit_order_event(event="ORDER_PLACED", bot_id=str(bot_id), timeframe=settings.granularity, instrument=settings.instrument, ref_id=oid)
             else:
                 resp = client.place_market_order(
                     units=int(units),
@@ -259,7 +224,8 @@ def main(cfg: dict | None = None) -> None:
                     stop_loss=float(stop_px),
                     take_profit=float(tp_px),
                 )
-                log.info(f"ORDER_OK | type=MARKET | resp_keys={list(resp.keys())}")
+                oid = str((resp.get("orderCreateTransaction") or {}).get("id") or (resp.get("orderFillTransaction") or {}).get("orderID") or "")
+                emit_order_event(event="ORDER_PLACED", bot_id=str(bot_id), timeframe=settings.granularity, instrument=settings.instrument, ref_id=oid)
 
             kv_set(bot_id, "orb_last_trade_date", today_str)
 

@@ -26,6 +26,32 @@ OANDA trading bots driven by `config/bots.yaml`.
 - Tag format is: `{bot_id}|{timeframe}`.
 - To attribute fills/trades in OANDA, inspect transactions/trades for `clientExtensions.tag` (or `tradeClientExtensions.tag`) and group by that value.
 
+## Exporting Trades To CSV
+- Script: `tools/export_oanda_trades.py`
+- Purpose: read-only export of closed-trade performance rows from OANDA transactions.
+- Safety: this script never places/cancels orders; it only performs `GET` requests.
+
+Example `.env` values:
+```bash
+OANDA_API_KEY=your_api_key_here
+OANDA_ENV=practice
+OANDA_ACCOUNT_IDS=101-xxx-xxx-002,101-xxx-xxx-003
+# Optional:
+OANDA_SINCE_DAYS=30
+```
+
+Run examples:
+```bash
+python tools/export_oanda_trades.py
+python tools/export_oanda_trades.py --since-days 14
+python tools/export_oanda_trades.py --env live --accounts "101-...-004,101-...-005"
+python tools/export_oanda_trades.py --outdir exports
+```
+
+Output:
+- CSV saved to `exports/oanda_trades_YYYY-MM-DD_HHMMSS.csv`.
+- Includes tag split columns (`bot_id`, `timeframe`) using `<bot_id>|<timeframe>`.
+
 ## Deployment
 - Run under `systemd` with:
   - `ExecStart=/home/ubuntu/trading-bots/.venv/bin/python -m bots.runner <BOT_ID>`

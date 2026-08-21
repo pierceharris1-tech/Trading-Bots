@@ -9,10 +9,13 @@ import pandas as pd
 from shared.bot_config import cfg_instruments, cfg_timeframe, require_account_id
 from shared.config import load_settings
 from shared.daily_engine import (
+    emit_order_event,
+    emit_processed_candle,
     kv_json_get,
     kv_json_set,
     last_processed_bar_key,
     reconcile_closed_trades,
+    select_latest_complete_candle,
     set_processed_candle_bar,
     should_process_candle_bar,
 )
@@ -27,11 +30,12 @@ from shared.time_utils import seconds_until_next_close
 log = get_logger("bot.channel_breakout_daily")
 
 
-def _close_position(bot_id: str, client: OandaClient, state: dict, now_ts: pd.Timestamp) -> None:
+def _close_position(bot_id: str, timeframe: str, instrument: str, client: OandaClient, state: dict, now_ts: pd.Timestamp) -> None:
     trade_id = str(state.get("trade_id", ""))
     if not trade_id:
         return
     close_resp = client.close_trade(trade_id)
+    emit_order_event(event="ORDER_CLOSED", bot_id=bot_id, timeframe=timeframe, instrument=instrument, ref_id=trade_id)
     realized = parse_realized_pl(close_resp)
     open_ts = pd.to_datetime(str(state["open_time"]), utc=True)
     duration = int((now_ts - open_ts).total_seconds())
@@ -47,6 +51,7 @@ def _close_position(bot_id: str, client: OandaClient, state: dict, now_ts: pd.Ti
 def _open_market(
     *,
     bot_id: str,
+    timeframe: str,
     instrument: str,
     account_id: str,
     client: OandaClient,
@@ -56,6 +61,13 @@ def _open_market(
 ) -> dict:
     resp = client.place_market_order(units=units, instrument=instrument, stop_loss=stop_px)
     order_id, trade_id = parse_order_ids(resp)
+    emit_order_event(
+        event="ORDER_PLACED",
+        bot_id=bot_id,
+        timeframe=timeframe,
+        instrument=instrument,
+        ref_id=str(order_id or trade_id or ""),
+    )
     trade_open(
         bot_id=bot_id,
         instrument=instrument,
@@ -110,7 +122,7 @@ def _process_channel_breakout(
         if rejection_left > 0 and bool(cfg.get("rejection_rule", True)):
             ok = close_t > breakout_level if side > 0 else close_t < breakout_level
             if not ok:
-                _close_position(bot_id, client, pos, latest)
+                _close_position(bot_id, str(cfg.get("timeframe", "D")), instrument, client, pos, latest)
                 kv_set(bot_id, key, "")
                 return
             pos["rejection_days_left"] = rejection_left - 1
@@ -124,20 +136,20 @@ def _process_channel_breakout(
 
         # ADX profit exit
         if not math.isnan(adx_t) and not math.isnan(adx_prev) and adx_t > 40.0 and adx_t < adx_prev:
-            _close_position(bot_id, client, pos, latest)
+            _close_position(bot_id, str(cfg.get("timeframe", "D")), instrument, client, pos, latest)
             kv_set(bot_id, key, "")
             return
 
-        # 20-day channel exit after deep profit
+        # 20-bar channel exit after deep profit
         if deep_profit:
             ll20 = float(bars["ll20"].iloc[t_idx]) if not pd.isna(bars["ll20"].iloc[t_idx]) else math.nan
             hh20 = float(bars["hh20"].iloc[t_idx]) if not pd.isna(bars["hh20"].iloc[t_idx]) else math.nan
             if side > 0 and not math.isnan(ll20) and close_t < ll20:
-                _close_position(bot_id, client, pos, latest)
+                _close_position(bot_id, str(cfg.get("timeframe", "D")), instrument, client, pos, latest)
                 kv_set(bot_id, key, "")
                 return
             if side < 0 and not math.isnan(hh20) and close_t > hh20:
-                _close_position(bot_id, client, pos, latest)
+                _close_position(bot_id, str(cfg.get("timeframe", "D")), instrument, client, pos, latest)
                 kv_set(bot_id, key, "")
                 return
 
@@ -190,6 +202,7 @@ def _process_channel_breakout(
 
     placed = _open_market(
         bot_id=bot_id,
+        timeframe=str(cfg.get("timeframe", "D")),
         instrument=instrument,
         account_id=account_id,
         client=client,
@@ -242,7 +255,7 @@ def _process_reversal_days(
 
         stopped = (side > 0 and low_t <= stop_px) or (side < 0 and high_t >= stop_px)
         if stopped:
-            _close_position(bot_id, client, pos, latest)
+            _close_position(bot_id, str(cfg.get("timeframe", "D")), instrument, client, pos, latest)
             kv_set(bot_id, key, "")
             # lemonade flip
             flip_side = -side
@@ -260,6 +273,7 @@ def _process_reversal_days(
             if units != 0:
                 placed = _open_market(
                     bot_id=bot_id,
+                    timeframe=str(cfg.get("timeframe", "D")),
                     instrument=instrument,
                     account_id=account_id,
                     client=client,
@@ -284,7 +298,7 @@ def _process_reversal_days(
 
         # close on t+1 close
         if latest > entry_bar:
-            _close_position(bot_id, client, pos, latest)
+            _close_position(bot_id, str(cfg.get("timeframe", "D")), instrument, client, pos, latest)
             kv_set(bot_id, key, "")
         return
 
@@ -321,6 +335,7 @@ def _process_reversal_days(
 
     placed = _open_market(
         bot_id=bot_id,
+        timeframe=str(cfg.get("timeframe", "D")),
         instrument=instrument,
         account_id=account_id,
         client=client,
@@ -370,8 +385,13 @@ def main(cfg: dict | None = None) -> None:
             reconcile_closed_trades(bot_id, client)
             for instrument in instruments:
                 candles = client.get_candles(instrument=instrument, granularity=timeframe, count=400)
-                bars = candles_to_df(candles)
-                latest = bars.index[-1]
+                decision = select_latest_complete_candle(candles.get("candles", []))
+                if decision is None:
+                    continue
+                latest, _ = decision
+                bars = candles_to_df(candles).loc[:latest]
+                if bars.empty:
+                    continue
                 process_key = last_processed_bar_key(instrument, timeframe, f"_{sub_strategy}")
                 if not should_process_candle_bar(
                     bot_id,
@@ -401,6 +421,7 @@ def main(cfg: dict | None = None) -> None:
                     )
                 set_processed_candle_bar(bot_id, process_key, latest)
                 last_processed_bar_by_instrument[instrument] = latest
+                emit_processed_candle(bot_id, timeframe, instrument, latest)
         except Exception as e:
             log.exception("CHANNEL_BREAKOUT_ERROR | bot_id=%s | account_id=%s | err=%s", bot_id, account_id, e)
             time.sleep(5)
