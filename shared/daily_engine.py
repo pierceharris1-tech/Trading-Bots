@@ -26,6 +26,45 @@ def kv_json_set(bot_id: str, key: str, obj: dict[str, Any]) -> None:
     kv_set(bot_id, key, json.dumps(obj, separators=(",", ":")))
 
 
+def select_latest_complete_candle(candles: list[dict[str, Any]]) -> tuple[pd.Timestamp, dict[str, Any]] | None:
+    for candle in reversed(candles):
+        if not isinstance(candle, dict):
+            continue
+        if candle.get("complete") is not True:
+            continue
+        ts_raw = candle.get("time")
+        if not ts_raw:
+            continue
+        try:
+            ts = pd.to_datetime(str(ts_raw), utc=True)
+        except Exception:
+            continue
+        return ts, candle
+    return None
+
+
+def emit_processed_candle(bot_id: str, timeframe: str, instrument: str, candle_time: pd.Timestamp) -> None:
+    print(
+        f"PROCESSED_CANDLE bot={bot_id} tf={str(timeframe).upper()} inst={instrument} t={candle_time.isoformat()}",
+        flush=True,
+    )
+
+
+def emit_order_event(
+    *,
+    event: str,
+    bot_id: str,
+    timeframe: str,
+    instrument: str,
+    ref_id: str = "",
+) -> None:
+    suffix = f" ref={ref_id}" if ref_id else ""
+    print(
+        f"{event} bot={bot_id} tf={str(timeframe).upper()} inst={instrument}{suffix}",
+        flush=True,
+    )
+
+
 def last_processed_day_key(instrument: str, suffix: str = "") -> str:
     return f"daily_last_processed_{instrument}{suffix}"
 

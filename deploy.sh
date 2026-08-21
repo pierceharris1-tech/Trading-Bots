@@ -1,24 +1,41 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd /home/ubuntu/trading-bots
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$REPO_DIR"
+
+old_head="$(git rev-parse HEAD)"
+branch="$(git rev-parse --abbrev-ref HEAD)"
 
 echo "== Pulling latest code =="
-git pull
+git fetch origin "$branch"
+git pull --ff-only origin "$branch"
 
-echo "== Checking dependency changes =="
-if git rev-parse -q --verify 'HEAD@{1}' >/dev/null 2>&1; then
-  if git diff --name-only HEAD@{1} HEAD | grep -q '^requirements\.txt$'; then
-    echo "== requirements.txt changed; installing deps =="
-    /home/ubuntu/trading-bots/.venv/bin/pip install -r requirements.txt
-  else
-    echo "== requirements.txt unchanged; skipping pip install =="
-  fi
-else
-  echo "== No previous HEAD (fresh repo state); skipping diff check =="
+new_head="$(git rev-parse HEAD)"
+
+if [[ "$old_head" == "$new_head" ]]; then
+  echo "No new commits pulled; skipping dependency check and bot restarts."
+  exit 0
 fi
 
-echo "== Restarting enabled trading-bot@ instances =="
+changed_files="$(git diff --name-only "$old_head" "$new_head")"
+
+echo "== Checking dependency changes =="
+if grep -q '^requirements\.txt$' <<<"$changed_files"; then
+  echo "== requirements.txt changed; installing deps =="
+  "$REPO_DIR/.venv/bin/pip" install -r requirements.txt
+else
+  echo "== requirements.txt unchanged; skipping pip install =="
+fi
+
+runtime_change_pattern='^(bots/|shared/|config/|requirements\.txt$|deploy/|.*\.service$|.*\.timer$)'
+
+if ! grep -Eq "$runtime_change_pattern" <<<"$changed_files"; then
+  echo "Pulled changes are non-runtime (e.g., tools/notebooks/README); skipping bot restarts."
+  exit 0
+fi
+
+echo "== Restarting enabled trading-bot@ / trading-bot-practice@ instances =="
 
 # Enabled units show up as symlinks in multi-user.target.wants
 mapfile -t LIVE_UNITS < <(
@@ -36,12 +53,14 @@ mapfile -t PRACTICE_UNITS < <(
 ALL_UNITS=("${LIVE_UNITS[@]}" "${PRACTICE_UNITS[@]}")
 
 if [ "${#ALL_UNITS[@]}" -eq 0 ]; then
-  echo "No enabled trading-bot@*.service units found. Nothing to restart."
+  echo "No enabled trading-bot@*/trading-bot-practice@* units found. Nothing to restart."
   exit 0
 fi
 
+echo "Runtime changes detected; restarting:"
+printf ' - %s\n' "${ALL_UNITS[@]}"
+
 for unit in "${ALL_UNITS[@]}"; do
-  echo "Restarting: $unit"
   sudo systemctl restart "$unit"
 done
 

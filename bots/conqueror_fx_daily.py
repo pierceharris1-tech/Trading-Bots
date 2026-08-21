@@ -8,10 +8,13 @@ import pandas as pd
 from shared.bot_config import cfg_instruments, cfg_timeframe, require_account_id
 from shared.config import load_settings
 from shared.daily_engine import (
+    emit_order_event,
+    emit_processed_candle,
     kv_json_get,
     kv_json_set,
     last_processed_bar_key,
     reconcile_closed_trades,
+    select_latest_complete_candle,
     set_processed_candle_bar,
     should_process_candle_bar,
 )
@@ -43,12 +46,13 @@ def _all_aligned(side: int, a: float, b: float, c: float) -> bool:
     return a < 0 and b < 0 and c < 0
 
 
-def _close_trade(bot_id: str, client: OandaClient, pos: dict, now_ts: pd.Timestamp) -> None:
+def _close_trade(bot_id: str, timeframe: str, instrument: str, client: OandaClient, pos: dict, now_ts: pd.Timestamp) -> None:
     trade_id = str(pos.get("trade_id", ""))
     if not trade_id or trade_id == "None":
         log.warning("Skipping close — trade_id is None for bot_id=%s", bot_id)
         return
     resp = client.close_trade(trade_id)
+    emit_order_event(event="ORDER_CLOSED", bot_id=bot_id, timeframe=timeframe, instrument=instrument, ref_id=trade_id)
     realized = parse_realized_pl(resp)
     open_ts = pd.to_datetime(str(pos["open_time"]), utc=True)
     duration = int((now_ts - open_ts).total_seconds())
@@ -64,6 +68,7 @@ def _close_trade(bot_id: str, client: OandaClient, pos: dict, now_ts: pd.Timesta
 def _open_trade(
     *,
     bot_id: str,
+    timeframe: str,
     account_id: str,
     client: OandaClient,
     instrument: str,
@@ -73,6 +78,13 @@ def _open_trade(
 ) -> dict:
     resp = client.place_market_order(units=units, instrument=instrument, stop_loss=stop_px)
     order_id, trade_id = parse_order_ids(resp)
+    emit_order_event(
+        event="ORDER_PLACED",
+        bot_id=bot_id,
+        timeframe=timeframe,
+        instrument=instrument,
+        ref_id=str(order_id or trade_id or ""),
+    )
     trade_open(
         bot_id=bot_id,
         instrument=instrument,
@@ -137,7 +149,7 @@ def _process_instrument(
         stopped = (side > 0 and low_t <= stop_px) or (side < 0 and high_t >= stop_px)
         if stopped:
             aligned = _all_aligned(side, a, b, c)
-            _close_trade(bot_id, client, pos, latest)
+            _close_trade(bot_id, str(cfg.get("timeframe", "D")), instrument, client, pos, latest)
             kv_set(bot_id, key, "")
             if variant == "I" and aligned:
                 # Wait for a flip away, then alignment again before re-entry.
@@ -187,6 +199,7 @@ def _process_instrument(
 
     placed = _open_trade(
         bot_id=bot_id,
+        timeframe=str(cfg.get("timeframe", "D")),
         account_id=account_id,
         client=client,
         instrument=instrument,
@@ -231,8 +244,14 @@ def main(cfg: dict | None = None) -> None:
             time.sleep(seconds_until_next_close(timeframe) + 1)
             reconcile_closed_trades(bot_id, client)
             for instrument in instruments:
-                bars = candles_to_df(client.get_candles(instrument=instrument, granularity=timeframe, count=300))
-                latest = bars.index[-1]
+                candles = client.get_candles(instrument=instrument, granularity=timeframe, count=300)
+                decision = select_latest_complete_candle(candles.get("candles", []))
+                if decision is None:
+                    continue
+                latest, _ = decision
+                bars = candles_to_df(candles).loc[:latest]
+                if bars.empty:
+                    continue
                 key = last_processed_bar_key(instrument, timeframe, "_conqueror")
                 if not should_process_candle_bar(
                     bot_id,
@@ -251,6 +270,7 @@ def main(cfg: dict | None = None) -> None:
                 )
                 set_processed_candle_bar(bot_id, key, latest)
                 last_processed_bar_by_instrument[instrument] = latest
+                emit_processed_candle(bot_id, timeframe, instrument, latest)
         except Exception as e:
             log.exception("CONQUEROR_ERROR | bot_id=%s | account_id=%s | err=%s", bot_id, account_id, e)
             time.sleep(5)

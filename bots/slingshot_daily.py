@@ -7,10 +7,13 @@ import pandas as pd
 from shared.bot_config import cfg_instruments, cfg_timeframe, require_account_id
 from shared.config import load_settings
 from shared.daily_engine import (
+    emit_order_event,
+    emit_processed_candle,
     kv_json_get,
     kv_json_set,
     last_processed_bar_key,
     reconcile_closed_trades,
+    select_latest_complete_candle,
     set_processed_candle_bar,
     should_process_candle_bar,
 )
@@ -129,8 +132,14 @@ def main(cfg: dict | None = None) -> None:
             time.sleep(seconds_until_next_close(timeframe) + 1)
             reconcile_closed_trades(bot_id, client)
             for instrument in instruments:
-                bars = candles_to_df(client.get_candles(instrument=instrument, granularity=timeframe, count=500))
-                latest = bars.index[-1]
+                candles = client.get_candles(instrument=instrument, granularity=timeframe, count=500)
+                decision = select_latest_complete_candle(candles.get("candles", []))
+                if decision is None:
+                    continue
+                latest, _ = decision
+                bars = candles_to_df(candles).loc[:latest]
+                if bars.empty:
+                    continue
                 key = last_processed_bar_key(instrument, timeframe, "_slingshot")
                 if not should_process_candle_bar(
                     bot_id,
@@ -161,6 +170,7 @@ def main(cfg: dict | None = None) -> None:
                         kv_set(bot_id, state_key, "")
                         set_processed_candle_bar(bot_id, key, latest)
                         last_processed_bar_by_instrument[instrument] = latest
+                        emit_processed_candle(bot_id, timeframe, instrument, latest)
                         continue
 
                     trade_id = str(open_trades[0].get("id"))
@@ -174,9 +184,11 @@ def main(cfg: dict | None = None) -> None:
                     # local stop management
                     if high_t >= stop_px:
                         client.close_trade(trade_id)
+                        emit_order_event(event="ORDER_CLOSED", bot_id=bot_id, timeframe=timeframe, instrument=instrument, ref_id=trade_id)
                         kv_set(bot_id, state_key, "")
                         set_processed_candle_bar(bot_id, key, latest)
                         last_processed_bar_by_instrument[instrument] = latest
+                        emit_processed_candle(bot_id, timeframe, instrument, latest)
                         continue
 
                     # first target and subsequent multiples
@@ -185,6 +197,7 @@ def main(cfg: dict | None = None) -> None:
                     if low_t <= target_px and current_units > 0:
                         to_close = max(1, current_units // 2)
                         client.close_trade(trade_id, units=str(to_close))
+                        emit_order_event(event="ORDER_CLOSED", bot_id=bot_id, timeframe=timeframe, instrument=instrument, ref_id=trade_id)
                         state["next_multiple"] = multiple + 1
                         # protect 25% profits after first target
                         if multiple == 1:
@@ -221,6 +234,7 @@ def main(cfg: dict | None = None) -> None:
                                 stop_loss=stop_px,
                             )
                             order_id, _ = parse_order_ids(resp)
+                            emit_order_event(event="ORDER_PLACED", bot_id=bot_id, timeframe=timeframe, instrument=instrument, ref_id=str(order_id or ""))
                             kv_json_set(
                                 bot_id,
                                 state_key,
@@ -235,6 +249,7 @@ def main(cfg: dict | None = None) -> None:
 
                 set_processed_candle_bar(bot_id, key, latest)
                 last_processed_bar_by_instrument[instrument] = latest
+                emit_processed_candle(bot_id, timeframe, instrument, latest)
         except Exception as e:
             log.exception("SLINGSHOT_ERROR | bot_id=%s | account_id=%s | err=%s", bot_id, account_id, e)
             time.sleep(5)
