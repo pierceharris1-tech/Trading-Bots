@@ -21,6 +21,7 @@ import config
 import strategy
 import risk
 import state
+import signal_log
 from kraken_client import KrakenClient, KrakenAPIError
 from position_manager import open_trade, manage_trade, cancel_unfilled
 
@@ -97,24 +98,35 @@ def run_cycle(client, active_trades, seen_ob_times):
             # positions open yet" -> nothing to be at risk from, floor check passes.
             ml_raw = trade_bal.get("ml")
             margin_level = float(ml_raw) if ml_raw is not None else 999.0
+            balance_fetch_error = None
         except KrakenAPIError as e:
             error_log.error(f"Kraken error fetching TradeBalance this cycle: {e}")
             equity = free_margin = margin_level = None
+            balance_fetch_error = str(e)
 
         for sig in signals:
             seen_ob_times.add(sig["ob_time"])
 
             if equity is None:
-                continue  # TradeBalance fetch failed above -- nothing sizeable this cycle
+                # TradeBalance fetch failed above -- nothing sizeable this cycle
+                signal_log.log_skipped(sig, "balance_fetch_failed",
+                                        balance_fetch_error or "TradeBalance fetch failed")
+                continue
             if equity <= 0:
                 log.info(f"skip signal {sig['ob_time']}: equity is 0 or unavailable from TradeBalance")
+                signal_log.log_skipped(sig, "zero_equity", f"equity={equity}",
+                                        equity=equity, free_margin=free_margin, margin_level=margin_level)
                 continue
             if not risk.check_margin_floor(margin_level, config.MARGIN_FLOOR_PCT):
                 log.info(f"skip signal {sig['ob_time']}: margin level {margin_level} at/under floor")
+                signal_log.log_skipped(sig, "margin_floor",
+                                        f"margin_level={margin_level} floor={config.MARGIN_FLOOR_PCT}",
+                                        equity=equity, free_margin=free_margin, margin_level=margin_level)
                 continue
 
             try:
                 sl_price = (sig["ob_low"] if sig["direction"] == "bull" else sig["ob_high"])
+                free_margin_before = free_margin
                 sizes = risk.size_trade(equity, sig["entry_price"], sl_price, free_margin,
                                          risk_pct=config.RISK_PCT, leverage=config.LEVERAGE)
 
@@ -123,11 +135,18 @@ def run_cycle(client, active_trades, seen_ob_times):
                 free_margin -= sizes["required_margin"]  # local running deduction, no re-query
                 log.info(f"opened trade: {sig['direction']} entry={sig['entry_price']} "
                           f"size_a={sizes['size_a']:.6f} size_b={sizes['size_b']:.6f}")
+                signal_log.log_opened(sig, sizes, equity=equity,
+                                       free_margin=free_margin_before, margin_level=margin_level)
 
             except risk.SizingError as e:
                 log.info(f"skip signal {sig['ob_time']}: {e}")
+                signal_log.log_skipped(sig, getattr(e, "reason", "sizing_error"), str(e),
+                                        equity=equity, free_margin=free_margin, margin_level=margin_level)
             except KrakenAPIError as e:
                 error_log.error(f"Kraken error opening trade for signal {sig['ob_time']}: {e}")
+                reason = "rate_limited" if "Rate limit" in str(e) else "kraken_api_error"
+                signal_log.log_skipped(sig, reason, str(e),
+                                        equity=equity, free_margin=free_margin, margin_level=margin_level)
                 if "Rate limit" in str(e):
                     log.info("rate limit hit -- stopping new-signal processing for this cycle")
                     break

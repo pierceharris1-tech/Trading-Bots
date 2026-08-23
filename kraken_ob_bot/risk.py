@@ -16,7 +16,12 @@ MARGIN_FLOOR_PCT = 200  # won't open a new trade if margin level would drop belo
 
 
 class SizingError(Exception):
-    pass
+    """reason is a stable code for signal_log.py to record -- keep it in
+    sync with signal_log.REASON_CODES if a new one is added here."""
+
+    def __init__(self, message, reason="sizing_error"):
+        super().__init__(message)
+        self.reason = reason
 
 
 def size_trade(balance, entry_price, sl_price, free_margin, ordermin=KRAKEN_MIN_BTC_ORDER,
@@ -35,7 +40,8 @@ def size_trade(balance, entry_price, sl_price, free_margin, ordermin=KRAKEN_MIN_
     required_margin = (total_size * entry_price) / leverage
     if required_margin > free_margin:
         raise SizingError(
-            f"required_margin {required_margin:.2f} exceeds free_margin {free_margin:.2f}"
+            f"required_margin {required_margin:.2f} exceeds free_margin {free_margin:.2f}",
+            reason="insufficient_capital",
         )
 
     size_a = total_size * POS_A_PCT

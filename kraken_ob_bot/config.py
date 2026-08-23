@@ -30,3 +30,8 @@ LOG_DIR = "/home/ubuntu/logs/bots"
 STATE_PATH = os.environ.get("OB_BOT_STATE_PATH", f"{LOG_DIR}/kraken-ob-bot-state.json")
 TRADE_LOG_PATH = f"{LOG_DIR}/kraken-ob-bot-trades.log"
 ERROR_LOG_PATH = f"{LOG_DIR}/kraken-ob-bot-errors.log"
+# Structured JSON-lines record of every signal the bot evaluates (opened
+# AND skipped, with a reason code) -- see signal_log.py / signal_summary.py.
+# Deliberately a separate file from the two above so it can be
+# grepped/parsed on its own without wading through free-text log lines.
+SIGNAL_LOG_PATH = f"{LOG_DIR}/kraken-ob-bot-signals.log"
