@@ -5,6 +5,7 @@ candle buffer. Written every cycle so a crash/restart loses at most one
 """
 import json
 import os
+import pandas as pd
 from position_manager import Trade
 
 STATE_PATH = os.environ.get("OB_BOT_STATE_PATH", "state.json")
@@ -43,7 +44,15 @@ def load_state(path=STATE_PATH):
         t.b = d["b"]
         trades.append(t)
 
-    seen = set(payload.get("seen_ob_times", []))
+    # ob_time is a pandas Timestamp everywhere it's compared (strategy.py's
+    # `row["ob_time"] in seen_ob_times` check) -- saved to JSON as a plain
+    # string, so it MUST be converted back to Timestamp here, or every
+    # entry silently fails to match (different type -> different hash ->
+    # `in` on the set always returns False) and the bot "forgets" every
+    # signal it has ever seen the moment it restarts. Confirmed happening
+    # live on 2026-08-23 before this fix: signals from hours earlier kept
+    # reappearing as "new" after every restart.
+    seen = set(pd.Timestamp(t) for t in payload.get("seen_ob_times", []))
     return trades, seen
 
 
