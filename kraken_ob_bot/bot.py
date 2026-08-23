@@ -9,6 +9,7 @@ survives SSH disconnects; that unit/process-manager setup is outside this
 file's scope, added at Phase 7 (demo trading) once the loop itself is
 verified stable.
 """
+import os
 import time
 import logging
 import traceback
@@ -67,7 +68,8 @@ def run_cycle(client, active_trades, seen_ob_times):
             still_active.append(trade)
     active_trades = still_active
 
-    # 2. look for new signals
+    # 2. look for new signals (already filtered to non-stale ones -- see
+    #    strategy.get_new_signals' mitigation_wait check)
     signals = strategy.get_new_signals(prepared, seen_ob_times)
     for sig in signals:
         seen_ob_times.add(sig["ob_time"])
@@ -108,16 +110,45 @@ def run_cycle(client, active_trades, seen_ob_times):
             log.info(f"skip signal {sig['ob_time']}: {e}")
         except KrakenAPIError as e:
             error_log.error(f"Kraken error opening trade for signal {sig['ob_time']}: {e}")
+            if "Rate limit" in str(e):
+                # Don't keep hammering the API for the rest of this cycle's
+                # signals -- that just makes the rate-limit situation worse.
+                # ob_time is already marked seen above so this signal won't
+                # be retried; any signals still unprocessed this cycle are
+                # simply picked up next cycle if they're still fresh.
+                log.info("rate limit hit -- stopping new-signal processing for this cycle")
+                break
 
     state.save_state(active_trades, seen_ob_times, path=config.STATE_PATH)
     return active_trades, seen_ob_times
+
+
+def seed_seen_signals(client):
+    """Called once on a true cold start (no state.json yet). Marks every
+    OB currently sitting in the buffer as 'seen' WITHOUT opening trades for
+    any of them -- the bot should only act on setups from this point
+    forward, never retroactively fire off a backlog of already-stale
+    historical signals the moment it first starts (that backlog is exactly
+    what caused the rate-limit flood on first launch)."""
+    bars = fetch_candles(client)
+    prepared = strategy.prepare_bars(bars)
+    bull_df, bear_df = strategy.find_order_blocks(prepared)
+    seen = set(bull_df["ob_time"]).union(set(bear_df["ob_time"]))
+    log.info(f"cold start: seeding {len(seen)} pre-existing OB(s) as already-seen "
+              f"(not tradeable) -- bot will only act on signals from here forward")
+    return seen
 
 
 def main():
     client = KrakenClient(config.KRAKEN_API_KEY, config.KRAKEN_API_SECRET, pair=config.PAIR)
     client.resolve_pair()
 
+    is_cold_start = not os.path.exists(config.STATE_PATH)
     active_trades, seen_ob_times = state.load_state(path=config.STATE_PATH)
+    if is_cold_start:
+        seen_ob_times = seed_seen_signals(client)
+        state.save_state(active_trades, seen_ob_times, path=config.STATE_PATH)
+
     if active_trades:
         log.info(f"restored {len(active_trades)} active trade(s) from state, reconciling...")
         active_trades = state.reconcile_on_startup(client, active_trades)

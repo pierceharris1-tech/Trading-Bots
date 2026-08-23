@@ -139,34 +139,40 @@ def find_order_blocks(d, impulse_wait=None, impulse_atr_mult=None, bos_wait=None
     return pd.DataFrame(bull_obs), pd.DataFrame(bear_obs)
 
 
-def get_new_signals(df, seen_ob_times):
+def get_new_signals(df, seen_ob_times, mitigation_wait=None):
     """
     df: prepared rolling candle buffer (output of prepare_bars).
     seen_ob_times: set of ob_time values the bot has already acted on
                    (persisted in state.py) -- prevents re-placing an
                    order for an OB detected on a previous cycle.
+    mitigation_wait: an OB whose BOS confirmed more than this many bars
+                   ago is stale -- price has had its whole entry window
+                   to return to the zone and didn't, so it's no longer
+                   tradeable. Filtered out here rather than left for the
+                   caller, so "new signal" always means "still live",
+                   never "old setup the bot just hasn't seen yet" (the
+                   gap this closes: on a cold start with no seen_ob_times,
+                   EVERY historical OB in the buffer would otherwise look
+                   new and get an entry attempt).
 
     Returns a list of dicts, one per new tradeable signal:
       {direction, ob_time, ob_high, ob_low, entry_price, bos_time}
     entry_price is the OB body edge -- top for bull, bottom for bear --
     i.e. where the resting limit order should be placed.
     """
+    mitigation_wait = mitigation_wait or WINNER["mitigation_wait"]
     bull_df, bear_df = find_order_blocks(df)
+    current_bar_idx = len(df) - 1
     signals = []
-    for _, row in bull_df.iterrows():
-        if row["ob_time"] in seen_ob_times:
-            continue
-        signals.append({
-            "direction": "bull", "ob_time": row["ob_time"], "bos_time": row["bos_time"],
-            "ob_high": row["ob_high"], "ob_low": row["ob_low"],
-            "entry_price": row["ob_high"],  # limit at body top
-        })
-    for _, row in bear_df.iterrows():
-        if row["ob_time"] in seen_ob_times:
-            continue
-        signals.append({
-            "direction": "bear", "ob_time": row["ob_time"], "bos_time": row["bos_time"],
-            "ob_high": row["ob_high"], "ob_low": row["ob_low"],
-            "entry_price": row["ob_low"],  # limit at body bottom
-        })
+    for direction, obs_df, entry_col in (("bull", bull_df, "ob_high"), ("bear", bear_df, "ob_low")):
+        for _, row in obs_df.iterrows():
+            if row["ob_time"] in seen_ob_times:
+                continue
+            if current_bar_idx - int(row["bos_idx"]) > mitigation_wait:
+                continue  # stale -- BOS confirmed too long ago, entry window elapsed
+            signals.append({
+                "direction": direction, "ob_time": row["ob_time"], "bos_time": row["bos_time"],
+                "ob_high": row["ob_high"], "ob_low": row["ob_low"],
+                "entry_price": row[entry_col],
+            })
     return signals
