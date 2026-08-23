@@ -1,0 +1,18 @@
+[Unit]
+Description=Kraken Order Block Bot - Live (BTC 3M)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/trading-bots/kraken_ob_bot
+EnvironmentFile=/etc/qtp/kraken.env
+ExecStart=/home/ubuntu/trading-bots/.venv/bin/python bot.py
+Restart=always
+RestartSec=15s
+StandardOutput=append:/home/ubuntu/logs/bots/kraken-ob-bot.log
+StandardError=append:/home/ubuntu/logs/bots/kraken-ob-bot.log
+
+[Install]
+WantedBy=multi-user.target

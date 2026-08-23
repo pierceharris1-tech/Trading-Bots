@@ -24,6 +24,9 @@ MARGIN_FLOOR_PCT = 200
 LOOP_SECONDS = 180  # 3 minutes, aligned to candle close
 
 # --- Paths ---
-STATE_PATH = os.environ.get("OB_BOT_STATE_PATH", "logs/state.json")
-TRADE_LOG_PATH = "logs/trades.log"
-ERROR_LOG_PATH = "logs/errors.log"
+# Matches the /home/ubuntu/logs/bots/ convention the other trading-bot@
+# systemd services already use, rather than a bot-local logs/ folder.
+LOG_DIR = "/home/ubuntu/logs/bots"
+STATE_PATH = os.environ.get("OB_BOT_STATE_PATH", f"{LOG_DIR}/kraken-ob-bot-state.json")
+TRADE_LOG_PATH = f"{LOG_DIR}/kraken-ob-bot-trades.log"
+ERROR_LOG_PATH = f"{LOG_DIR}/kraken-ob-bot-errors.log"

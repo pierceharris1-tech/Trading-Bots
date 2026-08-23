@@ -72,18 +72,31 @@ def run_cycle(client, active_trades, seen_ob_times):
     for sig in signals:
         seen_ob_times.add(sig["ob_time"])
         try:
-            balance = client.get_balance()
-            usd_balance = float(balance.get("ZUSD", 0))
+            # NOTE: risk is sized off account EQUITY (TradeBalance 'e'), not the raw
+            # ZUSD cash balance -- Pierce's account holds its value across BTC, ATOM,
+            # DOT etc, not fiat cash, so ZUSD alone reads as 0 and would silently
+            # zero-size every trade. Equity is Kraken's own mark-to-market total
+            # account value; free_margin ('mf') is the separate feasibility check.
             trade_bal = client.get_trade_balance()
-            free_margin = float(trade_bal.get("mf", usd_balance))
-            margin_level = float(trade_bal.get("ml", 999))  # 'ml' absent/huge if no open positions
+            equity = float(trade_bal.get("e", 0))
+            free_margin = float(trade_bal.get("mf", equity))
+            # 'ml' is absent from Kraken's response when there are no open
+            # margin positions -- confirmed against the real API during Phase 0
+            # testing (came back missing, not zero). Treat missing/None as "no
+            # positions open yet" -> nothing to be at risk from, floor check passes.
+            ml_raw = trade_bal.get("ml")
+            margin_level = float(ml_raw) if ml_raw is not None else 999.0
+
+            if equity <= 0:
+                log.info(f"skip signal {sig['ob_time']}: equity is 0 or unavailable from TradeBalance")
+                continue
 
             if not risk.check_margin_floor(margin_level, config.MARGIN_FLOOR_PCT):
                 log.info(f"skip signal {sig['ob_time']}: margin level {margin_level} at/under floor")
                 continue
 
             sl_price = (sig["ob_low"] if sig["direction"] == "bull" else sig["ob_high"])
-            sizes = risk.size_trade(usd_balance, sig["entry_price"], sl_price, free_margin,
+            sizes = risk.size_trade(equity, sig["entry_price"], sl_price, free_margin,
                                      risk_pct=config.RISK_PCT, leverage=config.LEVERAGE)
 
             trade = open_trade(client, sig, sizes, sl_price, current_bar_idx)
