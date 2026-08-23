@@ -11,10 +11,15 @@ from position_manager import Trade
 STATE_PATH = os.environ.get("OB_BOT_STATE_PATH", "state.json")
 
 
-def save_state(active_trades, seen_ob_times, path=STATE_PATH):
+def save_state(active_trades, seen_ob_times, pending_signals, path=STATE_PATH):
     payload = {
         "active_trades": [t.to_dict() for t in active_trades],
         "seen_ob_times": [str(t) for t in seen_ob_times],
+        # signals that were evaluated and skipped (insufficient capital,
+        # margin floor, etc) but whose OB hasn't been mitigated yet --
+        # bot.py retries these every cycle until they either open or the
+        # mitigation window closes. See bot._try_open_signal.
+        "pending_signals": pending_signals,
     }
     tmp_path = path + ".tmp"
     with open(tmp_path, "w") as f:
@@ -24,7 +29,7 @@ def save_state(active_trades, seen_ob_times, path=STATE_PATH):
 
 def load_state(path=STATE_PATH):
     if not os.path.exists(path):
-        return [], set()
+        return [], set(), []
     with open(path) as f:
         payload = json.load(f)
 
@@ -39,7 +44,13 @@ def load_state(path=STATE_PATH):
         t.tp_b_price = d["tp_b_price"]
         t.size_a = d["size_a"]
         t.size_b = d["size_b"]
-        t.opened_from_bar_idx = d["opened_from_bar_idx"]
+        # opened_from_time replaces the old opened_from_bar_idx (bar
+        # positions don't survive across cycles -- see
+        # position_manager.cancel_unfilled). Fall back to ob_time for a
+        # state.json written by the pre-fix bot version, so an old file
+        # doesn't crash load_state on restart.
+        opened_from = d.get("opened_from_time", d.get("ob_time"))
+        t.opened_from_time = pd.Timestamp(opened_from)
         t.a = d["a"]
         t.b = d["b"]
         trades.append(t)
@@ -53,7 +64,16 @@ def load_state(path=STATE_PATH):
     # live on 2026-08-23 before this fix: signals from hours earlier kept
     # reappearing as "new" after every restart.
     seen = set(pd.Timestamp(t) for t in payload.get("seen_ob_times", []))
-    return trades, seen
+
+    pending = []
+    for d in payload.get("pending_signals", []):
+        d = dict(d)
+        d["ob_time"] = pd.Timestamp(d["ob_time"])
+        if d.get("bos_time") is not None:
+            d["bos_time"] = pd.Timestamp(d["bos_time"])
+        pending.append(d)
+
+    return trades, seen, pending
 
 
 def reconcile_on_startup(client, active_trades):

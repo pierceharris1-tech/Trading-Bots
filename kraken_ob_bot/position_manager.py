@@ -24,6 +24,9 @@ in favor of this simpler SL->BE + fixed R20 cap).
 """
 import time
 
+import config
+import strategy
+
 R_BASE = 3
 R_RUNNER = 20
 
@@ -31,7 +34,7 @@ R_RUNNER = 20
 class Trade:
     """One OB signal's full lifecycle: entry -> TP/SL race -> (runner BE)."""
 
-    def __init__(self, signal, sizes, sl_price, opened_from_bar_idx):
+    def __init__(self, signal, sizes, sl_price, opened_from_time):
         self.direction = signal["direction"]
         self.ob_time = signal["ob_time"]
         self.entry_price = signal["entry_price"]
@@ -47,7 +50,9 @@ class Trade:
         )
         self.size_a = sizes["size_a"]
         self.size_b = sizes["size_b"]
-        self.opened_from_bar_idx = opened_from_bar_idx  # for the 200-bar cancel timeout
+        # timestamp (not a buffer bar-index -- see cancel_unfilled) used
+        # for the mitigation-window cancel timeout
+        self.opened_from_time = opened_from_time
 
         # order tracking, filled in by open_trade() / manage_trade()
         self.a = {"entry_txid": None, "tp_txid": None, "sl_txid": None, "status": "pending"}
@@ -60,24 +65,35 @@ class Trade:
             "entry_price": self.entry_price, "sl_price": self.sl_price,
             "tp_a_price": self.tp_a_price, "tp_b_price": self.tp_b_price,
             "size_a": self.size_a, "size_b": self.size_b,
-            "opened_from_bar_idx": self.opened_from_bar_idx,
+            "opened_from_time": str(self.opened_from_time),
             "a": self.a, "b": self.b,
         }
 
 
-def open_trade(client, signal, sizes, sl_price, bar_idx):
+def open_trade(client, signal, sizes, sl_price, opened_from_time):
     """Place the two resting limit entries (A + B), each with its own
-    conditional SL close. Returns a Trade with entry txids filled in."""
-    trade = Trade(signal, sizes, sl_price, bar_idx)
+    conditional SL close. Returns a Trade with entry txids filled in.
+
+    FIXED 2026-08-23: kraken_client.add_order()'s leverage param defaults
+    to 5 and neither call here was passing config.LEVERAGE explicitly, so
+    every live order used 5x regardless of config -- risk.size_trade()'s
+    required_margin math (which DOES use config.LEVERAGE) was computing
+    against a leverage the real order never actually got, silently
+    understating how much margin each trade really locked up. Caught by
+    Pierce noticing a live position open at 5x right after setting
+    config.LEVERAGE=10 and restarting."""
+    trade = Trade(signal, sizes, sl_price, opened_from_time)
     side = "buy" if trade.direction == "bull" else "sell"
 
     if trade.size_a > 0:
-        resp_a = client.add_order(side, trade.size_a, trade.entry_price, sl_price)
+        resp_a = client.add_order(side, trade.size_a, trade.entry_price, sl_price,
+                                   leverage=config.LEVERAGE)
         trade.a["entry_txid"] = resp_a["txid"][0]
         trade.a["status"] = "entry_open"
 
     if trade.size_b > 0:
-        resp_b = client.add_order(side, trade.size_b, trade.entry_price, sl_price)
+        resp_b = client.add_order(side, trade.size_b, trade.entry_price, sl_price,
+                                   leverage=config.LEVERAGE)
         trade.b["entry_txid"] = resp_b["txid"][0]
         trade.b["status"] = "entry_open"
 
@@ -85,15 +101,37 @@ def open_trade(client, signal, sizes, sl_price, bar_idx):
 
 
 def _is_filled(open_orders, closed_orders, txid):
-    """An order no longer in OpenOrders and present in ClosedOrders with
-    vol_exec == vol is filled; present in ClosedOrders with status
-    'canceled'/'expired' is not."""
+    """Returns True if genuinely filled, False if genuinely
+    cancelled/expired (never going to fill), or None if still resting/
+    pending -- callers must only act on True/False and leave the order
+    alone (retry next cycle) on None.
+
+    FIXED 2026-08-23: previously returned False for BOTH "still resting,
+    not yet filled" (txid in open_orders) AND "genuinely cancelled" (in
+    closed_orders with a terminal non-closed status) -- manage_trade()
+    treats any False as "cancelled" and drops the trade, so a perfectly
+    live resting entry order that simply hadn't filled within a single
+    3-minute cycle yet got wrongly declared dead and the trade lost from
+    tracking, EVERY time an entry took more than one cycle to fill
+    (normal for a resting limit order waiting for price to retrace to an
+    OB edge -- not a rare edge case). Caught by Pierce comparing the
+    bot's own log against Kraken's real order history: the bot declared
+    a trade 'closed (cancelled)' at 16:29:09 UTC, but Kraken's records
+    show both entry legs didn't actually fill until 16:35 -- six minutes
+    later, after the bot had already stopped tracking it. That trade's
+    TP was consequently never placed, since it never got another
+    manage_trade() cycle to notice the eventual fill."""
     if txid in open_orders:
-        return False
+        return None  # still resting -- not filled, not cancelled, just waiting
     order = closed_orders.get(txid)
     if order is None:
-        return None  # unknown -- don't assume, let the caller retry next cycle
-    return order.get("status") == "closed"
+        return None  # not found yet -- eventual-consistency lag, retry next cycle
+    status = order.get("status")
+    if status == "closed":
+        return True
+    if status in ("canceled", "expired"):
+        return False
+    return None  # some other/unknown terminal status -- don't assume, retry
 
 
 def _place_leg_tp(client, trade, leg_key, tp_price):
@@ -171,9 +209,21 @@ def manage_trade(client, trade, open_orders, closed_orders):
     return both_done
 
 
-def cancel_unfilled(client, trade, current_bar_idx, mitigation_wait=200):
-    """Cancel entries that never filled within the OB's mitigation window."""
-    if current_bar_idx - trade.opened_from_bar_idx <= mitigation_wait:
+def cancel_unfilled(client, trade, current_bar_time, mitigation_wait_bars=200, candle_minutes=3):
+    """Cancel entries that never filled within the OB's mitigation window.
+
+    FIXED 2026-08-23: originally compared trade.opened_from_bar_idx (a
+    position within the rolling candle buffer, captured once at open
+    time) against a freshly-computed current_bar_idx from a LATER
+    cycle's buffer. Because bot.fetch_candles keeps a fixed-size sliding
+    window (.tail(BUFFER_BARS)), a bar's position inside that window
+    shifts every cycle even though its timestamp doesn't -- once the
+    buffer was full, current_bar_idx was ~constant (~BUFFER_BARS-1)
+    every cycle, so the subtraction never grew and this timeout likely
+    never fired in practice. Now compares real timestamps instead, via
+    strategy.bars_elapsed, which stays correct across cycles."""
+    elapsed_bars = strategy.bars_elapsed(trade.opened_from_time, current_bar_time, candle_minutes)
+    if elapsed_bars <= mitigation_wait_bars:
         return False
     cancelled_any = False
     for leg in (trade.a, trade.b):

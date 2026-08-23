@@ -27,6 +27,19 @@ WINNER = {
 }
 
 
+def bars_elapsed(from_time, to_time, candle_minutes):
+    """Real elapsed candle-count between two timestamps -- safe to compare
+    across cycles, unlike raw buffer positions. The live candle buffer
+    (bot.fetch_candles's .tail(BUFFER_BARS)) is a fixed-size sliding
+    window, so a given bar's *position* inside it shifts every cycle even
+    though the bar's own timestamp never changes -- comparing positions
+    captured in different cycles (as the original cancel_unfilled did)
+    silently gives the wrong answer. Timestamps don't have that problem.
+    Approximate when the resampled series has gaps (dropna in
+    resample_ohlc), close enough for a 200-bar mitigation window check."""
+    return (to_time - from_time).total_seconds() / (candle_minutes * 60)
+
+
 def compute_atr(df, period=14):
     high, low, close = df["high"], df["low"], df["close"]
     prev_close = close.shift(1)

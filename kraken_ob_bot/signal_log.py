@@ -37,6 +37,8 @@ REASON_CODES = (
     "balance_fetch_failed",   # the TradeBalance API call itself failed
     "rate_limited",           # Kraken rate limit hit while placing the order
     "kraken_api_error",       # any other KrakenAPIError while opening
+    "expired_unfilled",       # was pending (skipped, retried each cycle) but its
+                               # OB's mitigation window closed before capital freed up
 )
 
 _fallback_log = logging.getLogger("ob_bot.signal_log")
