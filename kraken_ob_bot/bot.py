@@ -71,8 +71,17 @@ def run_cycle(client, active_trades, seen_ob_times):
     # 2. look for new signals (already filtered to non-stale ones -- see
     #    strategy.get_new_signals' mitigation_wait check)
     signals = strategy.get_new_signals(prepared, seen_ob_times)
-    for sig in signals:
-        seen_ob_times.add(sig["ob_time"])
+
+    if signals:
+        # NOTE: TradeBalance is fetched ONCE per cycle, not once per signal --
+        # equity/margin don't meaningfully change between signals a few
+        # milliseconds apart within the same cycle, and a burst of several
+        # OBs confirming off one price move (legitimate -- one strong move
+        # can break multiple structure levels at once) used to mean one
+        # TradeBalance call per signal, burning through Kraken's rate limit
+        # for no reason. free_margin is tracked down locally as trades open
+        # within this loop so we don't overspend margin between the one real
+        # balance check and however many signals get opened off it.
         try:
             # NOTE: risk is sized off account EQUITY (TradeBalance 'e'), not the raw
             # ZUSD cash balance -- Pierce's account holds its value across BTC, ATOM,
@@ -88,36 +97,40 @@ def run_cycle(client, active_trades, seen_ob_times):
             # positions open yet" -> nothing to be at risk from, floor check passes.
             ml_raw = trade_bal.get("ml")
             margin_level = float(ml_raw) if ml_raw is not None else 999.0
+        except KrakenAPIError as e:
+            error_log.error(f"Kraken error fetching TradeBalance this cycle: {e}")
+            equity = free_margin = margin_level = None
 
+        for sig in signals:
+            seen_ob_times.add(sig["ob_time"])
+
+            if equity is None:
+                continue  # TradeBalance fetch failed above -- nothing sizeable this cycle
             if equity <= 0:
                 log.info(f"skip signal {sig['ob_time']}: equity is 0 or unavailable from TradeBalance")
                 continue
-
             if not risk.check_margin_floor(margin_level, config.MARGIN_FLOOR_PCT):
                 log.info(f"skip signal {sig['ob_time']}: margin level {margin_level} at/under floor")
                 continue
 
-            sl_price = (sig["ob_low"] if sig["direction"] == "bull" else sig["ob_high"])
-            sizes = risk.size_trade(equity, sig["entry_price"], sl_price, free_margin,
-                                     risk_pct=config.RISK_PCT, leverage=config.LEVERAGE)
+            try:
+                sl_price = (sig["ob_low"] if sig["direction"] == "bull" else sig["ob_high"])
+                sizes = risk.size_trade(equity, sig["entry_price"], sl_price, free_margin,
+                                         risk_pct=config.RISK_PCT, leverage=config.LEVERAGE)
 
-            trade = open_trade(client, sig, sizes, sl_price, current_bar_idx)
-            active_trades.append(trade)
-            log.info(f"opened trade: {sig['direction']} entry={sig['entry_price']} "
-                      f"size_a={sizes['size_a']:.6f} size_b={sizes['size_b']:.6f}")
+                trade = open_trade(client, sig, sizes, sl_price, current_bar_idx)
+                active_trades.append(trade)
+                free_margin -= sizes["required_margin"]  # local running deduction, no re-query
+                log.info(f"opened trade: {sig['direction']} entry={sig['entry_price']} "
+                          f"size_a={sizes['size_a']:.6f} size_b={sizes['size_b']:.6f}")
 
-        except risk.SizingError as e:
-            log.info(f"skip signal {sig['ob_time']}: {e}")
-        except KrakenAPIError as e:
-            error_log.error(f"Kraken error opening trade for signal {sig['ob_time']}: {e}")
-            if "Rate limit" in str(e):
-                # Don't keep hammering the API for the rest of this cycle's
-                # signals -- that just makes the rate-limit situation worse.
-                # ob_time is already marked seen above so this signal won't
-                # be retried; any signals still unprocessed this cycle are
-                # simply picked up next cycle if they're still fresh.
-                log.info("rate limit hit -- stopping new-signal processing for this cycle")
-                break
+            except risk.SizingError as e:
+                log.info(f"skip signal {sig['ob_time']}: {e}")
+            except KrakenAPIError as e:
+                error_log.error(f"Kraken error opening trade for signal {sig['ob_time']}: {e}")
+                if "Rate limit" in str(e):
+                    log.info("rate limit hit -- stopping new-signal processing for this cycle")
+                    break
 
     state.save_state(active_trades, seen_ob_times, path=config.STATE_PATH)
     return active_trades, seen_ob_times
