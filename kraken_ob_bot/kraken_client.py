@@ -168,3 +168,14 @@ class KrakenClient:
             data["start"] = str(start)
         result = self._private("ClosedOrders", data)
         return result.get("closed", {})
+
+    def get_trades_history(self, start=None):
+        """Individual fill-level executions (not orders) -- price, vol,
+        cost, fee, type (buy/sell), time per fill. Ground truth for
+        realized $ P&L reconstruction, since ClosedOrders is order-level
+        and doesn't itself carry a settled-P&L figure for margin trades."""
+        data = {}
+        if start:
+            data["start"] = str(start)
+        result = self._private("TradesHistory", data)
+        return result.get("trades", {})
