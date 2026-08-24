@@ -176,6 +176,7 @@ def main():
     totals_realized = 0.0
     totals_intended = 0.0
     unresolved = []
+    slippage_rows = []  # (ts, direction, label, entry_px, close_px, actual_dist, implied_dist, realized)
 
     for e in events:
         ts, direction, entry_price = e["ts"], e["direction"], e["entry_price"]
@@ -188,6 +189,18 @@ def main():
             analyze_leg(fills, used, direction, entry_price, size_b, open_ts, "B"),
         ]
 
+        # implied per-BTC stop distance this trade WOULD have needed to make
+        # the 2%-of-equity sizing math work out, using the ACTUAL filled
+        # volume (not the requested size_a/size_b) -- entry_price - sl_price
+        # isn't logged anywhere per-trade, so this backs it out from the
+        # sizing formula itself: total_size = risk_amount / sl_distance
+        # => sl_distance = risk_amount / total_size.
+        total_filled_vol = sum(
+            lr["entry_fill"]["vol"] for lr in leg_results
+            if lr is not None and lr.get("entry_fill") is not None
+        )
+        implied_dist = (equity * config.RISK_PCT / total_filled_vol) if (equity and total_filled_vol) else None
+
         trade_realized = 0.0
         complete = True
         for lr in leg_results:
@@ -198,6 +211,12 @@ def main():
                 unresolved.append((ts, direction, entry_price, lr["label"], lr["status"]))
             else:
                 trade_realized += lr["realized"]
+                if lr["realized"] < 0 and implied_dist:
+                    entry_px = lr["entry_fill"]["price"]
+                    close_px = lr["close_fill"]["price"]
+                    actual_dist = abs(close_px - entry_px)
+                    slippage_rows.append((ts, direction, lr["label"], entry_px, close_px,
+                                           actual_dist, implied_dist, lr["realized"]))
 
         intended = (equity * config.RISK_PCT) if equity else None
         pct = (trade_realized / equity * 100) if equity else None
@@ -220,6 +239,22 @@ def main():
     print()
     print(f"Sum of 2%-of-equity risk budgets across all trades shown: {totals_intended:.2f}")
     print(f"Sum of realized $ P&L across all trades shown:            {totals_realized:+.2f}")
+
+    if slippage_rows:
+        print()
+        print("-" * 78)
+        print("SLIPPAGE CHECK -- for each losing leg: the stop distance implied by the")
+        print("2%-of-equity sizing math, vs the ACTUAL distance between the entry fill")
+        print("and the closing fill. A ratio well above 1.0x means the exit happened")
+        print("much further from entry than the intended stop -- i.e. slippage on a")
+        print("stop-loss order that executes at market once triggered, not a sizing bug.")
+        print("-" * 78)
+        print(f"{'opened':<20} {'leg':<4} {'entry px':>10} {'close px':>10} "
+              f"{'implied $':>10} {'actual $':>10} {'ratio':>7}")
+        for ts, direction, label, entry_px, close_px, actual_dist, implied_dist, realized in slippage_rows:
+            ratio = actual_dist / implied_dist if implied_dist else float("nan")
+            print(f"{ts[:19]:<20} {label:<4} {entry_px:>10.1f} {close_px:>10.1f} "
+                  f"{implied_dist:>10.1f} {actual_dist:>10.1f} {ratio:>6.1f}x")
 
     if unresolved:
         print()
