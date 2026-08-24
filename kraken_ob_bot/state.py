@@ -4,9 +4,13 @@ candle buffer. Written every cycle so a crash/restart loses at most one
 3-minute cycle of progress, not the whole trading history.
 """
 import json
+import logging
 import os
 import pandas as pd
 from position_manager import Trade
+from kraken_client import KrakenAPIError
+
+_log = logging.getLogger("ob_bot.state")
 
 STATE_PATH = os.environ.get("OB_BOT_STATE_PATH", "state.json")
 
@@ -81,7 +85,14 @@ def reconcile_on_startup(client, active_trades):
     tracked order txid against Kraken's live OpenOrders/ClosedOrders so a
     fill or cancellation that happened while the bot was down isn't missed.
     Reuses manage_trade's own fill-detection so there's one code path for
-    'what happened to this order', not two that could disagree."""
+    'what happened to this order', not two that could disagree.
+
+    FIXED 2026-08-24: this loop had no per-trade try/except, unlike
+    bot.run_cycle()'s equivalent loop (patched earlier the same day) --
+    an exception from one stuck trade here, called directly from main()
+    before the main loop's own try/except even starts, would crash the
+    whole process on EVERY startup attempt, not just cost one cycle.
+    Isolating it the same way run_cycle() already is."""
     from position_manager import manage_trade
 
     open_orders = client.get_open_orders()
@@ -89,7 +100,13 @@ def reconcile_on_startup(client, active_trades):
 
     still_active = []
     for trade in active_trades:
-        done = manage_trade(client, trade, open_orders, closed_orders)
+        try:
+            done = manage_trade(client, trade, open_orders, closed_orders)
+        except KrakenAPIError as e:
+            _log.error(f"Kraken error reconciling trade on startup (direction={trade.direction} "
+                       f"entry={trade.entry_price}): {e} -- leaving active, retry next cycle")
+            still_active.append(trade)
+            continue
         if not done:
             still_active.append(trade)
     return still_active

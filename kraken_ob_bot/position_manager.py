@@ -154,14 +154,32 @@ def _find_sl_txid(open_orders, closed_orders, entry_txid):
     """The conditional close Kraken auto-creates from an entry's close[]
     is a separate order whose `refid` points back at the entry's txid.
     Search both open and closed so it's still findable after it fires.
-    UNVERIFIED: this refid linkage is documented behavior but the exact
-    shape (does it appear in OpenOrders before or only after triggering?
-    is refid definitely the entry txid and not something else?) needs
-    confirming against a real demo account in Phase 1/7 before this is
-    trusted with real capital -- flagged rather than assumed."""
-    for o in open_orders.values():
+
+    VERIFIED 2026-08-24 (the refid-linkage question flagged below is
+    resolved -- confirmed live via a manually-placed TP that Kraken's own
+    order history showed correctly refid-linked back to its entry).
+
+    FIXED 2026-08-24: the open_orders loop iterated `.values()` and then
+    read `o.get('txid', None)` -- but Kraken's OpenOrders response nests
+    each order under its txid as the DICT KEY (see kraken_client.
+    get_open_orders: `result.get('open', {})` is `{txid: order}`), not as
+    a field inside the order object itself. `.values()` throws the key
+    away, so this always returned None for any SL still genuinely
+    resting -- which is the NORMAL state right after an entry fills and
+    before the TP/SL race even starts. Only an SL that had ALREADY fired
+    (found via the second loop, which correctly used `.items()`) was ever
+    discoverable. Consequence: leg['sl_txid'] never got set while
+    protection was actually live, so manage_trade() could never detect
+    that SL's eventual fill (sl_filled is hard-wired to None whenever
+    sl_txid is None) -- a leg could sit at 'open_racing' forever with its
+    TP never cancelled even after its real SL had already triggered on
+    Kraken, and _move_runner_to_be() could never find a live SL to amend
+    to breakeven at all. Very likely the actual mechanism behind most of
+    the orphaned-order buildup found via reconcile.py today, not just the
+    one incident that prompted this audit."""
+    for txid, o in open_orders.items():
         if o.get("refid") == entry_txid:
-            return o.get("txid", None)
+            return txid
     for txid, o in closed_orders.items():
         if o.get("refid") == entry_txid:
             return txid

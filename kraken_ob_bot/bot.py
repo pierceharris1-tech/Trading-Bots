@@ -277,8 +277,19 @@ def main():
 
     if active_trades:
         log.info(f"restored {len(active_trades)} active trade(s) from state, reconciling...")
-        active_trades = state.reconcile_on_startup(client, active_trades)
-        log.info(f"{len(active_trades)} trade(s) still active after reconciliation")
+        # FIXED 2026-08-24: reconcile_on_startup() runs once here, before the
+        # main loop's own try/except even exists -- an unprotected transient
+        # Kraken error (e.g. get_open_orders itself failing) would crash the
+        # process before it ever started trading. If reconciliation itself
+        # fails, fall back to the state as loaded and let the first normal
+        # cycle's manage_trade() calls catch up instead -- same information,
+        # just one cycle later, rather than not starting at all.
+        try:
+            active_trades = state.reconcile_on_startup(client, active_trades)
+            log.info(f"{len(active_trades)} trade(s) still active after reconciliation")
+        except KrakenAPIError as e:
+            error_log.error(f"Kraken error during startup reconciliation: {e} -- "
+                             f"starting with unreconciled state, first cycle will catch up")
 
     log.info("bot started")
     while True:
