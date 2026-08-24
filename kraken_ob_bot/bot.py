@@ -128,10 +128,25 @@ def run_cycle(client, active_trades, seen_ob_times, pending_signals):
     closed_orders = client.get_closed_orders()
     still_active = []
     for trade in active_trades:
-        cancel_unfilled(client, trade, current_bar_time,
-                         mitigation_wait_bars=strategy.WINNER["mitigation_wait"],
-                         candle_minutes=config.CANDLE_MINUTES)
-        done = manage_trade(client, trade, open_orders, closed_orders)
+        # FIXED 2026-08-24: this loop used to have no per-trade try/except,
+        # so one trade's Kraken rejection (e.g. a reduce-only TP placement
+        # against an already-closed leg -- see position_manager.manage_trade's
+        # docstring) propagated straight out of run_cycle(), skipping
+        # state.save_state() for the WHOLE cycle -- every trade, not just the
+        # one that failed -- and repeating identically every 3-minute cycle
+        # since the in-memory progress was discarded each time too. Isolating
+        # each trade means one still-unknown-future failure mode can only
+        # ever cost that one trade a cycle, never freeze the whole bot.
+        try:
+            cancel_unfilled(client, trade, current_bar_time,
+                             mitigation_wait_bars=strategy.WINNER["mitigation_wait"],
+                             candle_minutes=config.CANDLE_MINUTES)
+            done = manage_trade(client, trade, open_orders, closed_orders)
+        except KrakenAPIError as e:
+            error_log.error(f"Kraken error managing trade (direction={trade.direction} "
+                             f"entry={trade.entry_price}): {e} -- leaving active, retry next cycle")
+            still_active.append(trade)
+            continue
         if done:
             log.info(f"trade closed: {trade.direction} entry={trade.entry_price} "
                       f"a={trade.a['status']} b={trade.b['status']}")

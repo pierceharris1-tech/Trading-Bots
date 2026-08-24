@@ -22,13 +22,20 @@ fills at R3, the bot calls AmendOrder to move B's conditional SL
 trigger to breakeven -- no trailing stop (dropped per Pierce's decision
 in favor of this simpler SL->BE + fixed R20 cap).
 """
+import logging
 import time
 
 import config
 import strategy
+from kraken_client import KrakenAPIError
 
 R_BASE = 3
 R_RUNNER = 20
+
+# Propagates to bot.py's root logging config (FileHandler + StreamHandler
+# on kraken-ob-bot-trades.log) via ordinary logger-name-hierarchy
+# propagation -- no need to pass a logger through every call site.
+_log = logging.getLogger("ob_bot.position_manager")
 
 
 class Trade:
@@ -161,10 +168,74 @@ def _find_sl_txid(open_orders, closed_orders, entry_txid):
     return None
 
 
+FAVORABLE_A_CLOSE = ("closed_tp", "closed_external")
+TERMINAL = ("closed_tp", "closed_sl", "cancelled", "closed_external")
+
+
+def _move_runner_to_be(client, trade, open_orders, closed_orders):
+    """Standing invariant, re-checked every cycle rather than fired once
+    at the moment of detection: if leg A has closed favourably and leg B
+    is racing but not yet moved to breakeven, move it. Idempotent (guarded
+    by sl_at_be) and self-healing -- it no longer matters WHICH cycle or
+    WHICH code path resolved leg A, or whether leg B only became
+    'open_racing' after leg A already resolved (an ordering gap the old
+    inline version -- fired only from inside the tp_filled branch, once,
+    for leg A -- could miss entirely; see 2026-08-24 postmortem below)."""
+    if trade.a["status"] not in FAVORABLE_A_CLOSE:
+        return
+    if trade.b["status"] != "open_racing" or trade.b["sl_at_be"]:
+        return
+    if trade.b["sl_txid"] is None:
+        trade.b["sl_txid"] = _find_sl_txid(open_orders, closed_orders, trade.b["entry_txid"])
+    if not trade.b["sl_txid"]:
+        return  # not discoverable yet -- retry next cycle
+    try:
+        client.amend_order(trade.b["sl_txid"], trigger_price=trade.entry_price)
+        trade.b["sl_at_be"] = True
+    except KrakenAPIError as e:
+        _log.error(f"failed to move runner SL to breakeven (entry={trade.entry_price} "
+                    f"sl_txid={trade.b['sl_txid']}): {e} -- will retry next cycle")
+
+
 def manage_trade(client, trade, open_orders, closed_orders):
     """Call every cycle for every active trade. Advances each leg through
     its lifecycle and returns True if the trade is fully closed (both
-    legs done) so the caller can drop it from active state."""
+    legs done) so the caller can drop it from active state.
+
+    POSTMORTEM 2026-08-24: two bugs found together via a live incident.
+
+    (1) The entry_open branch, on seeing an entry filled, unconditionally
+    tried to place a NEW reduce_only TP order for that leg. If the
+    position was already flat by the time the bot noticed -- either its
+    own conditional SL fired before the bot's next 3-minute poll (a fast
+    move can land both the entry fill and the SL fill inside one cycle),
+    or Pierce closed it manually straight on the exchange (confirmed
+    happening live) -- Kraken rejects a reduce_only order that would
+    increase rather than reduce the position ("Reduce only: Cannot
+    increase position"). That exception propagated all the way out of
+    run_cycle() into bot.py's outer except, which logs one line and moves
+    on WITHOUT ever reaching state.save_state() -- so the failing leg's
+    status never advanced past entry_open, and every subsequent cycle
+    (every 3 minutes, for ~2 hours before caught) retried the identical
+    doomed placement. Fixed two ways: first, explicitly check whether the
+    leg's own conditional SL already fired (definitely a loss, not a
+    TP-shaped close) before ever attempting a TP placement. Second, wrap
+    the placement attempt itself in try/except -- if Kraken still rejects
+    it as reduce-only despite the SL not having fired, the most likely
+    explanation left is an external close (the manual-TP case actually
+    observed), so the leg is marked resolved rather than retried forever.
+    Nothing here should ever again be able to silently freeze state.json.
+
+    (2) Runner SL->breakeven only used to fire from inside this same
+    entry_open->TP flow (leg A's own tp_filled detection). Because leg
+    A's TP in the live incident was placed manually, outside the bot,
+    leg A never passed through that exact code path at all -- it went
+    entry_open -> closed_external via the new except-branch instead --
+    so the BE-move trigger was structurally unreachable for this trade,
+    even after fixing (1). Replaced the one-shot inline trigger with
+    _move_runner_to_be(), a standing check re-run at the end of every
+    manage_trade() call regardless of which path closed leg A or in what
+    order the two legs were processed this cycle."""
 
     for leg_key, tp_price in (("a", trade.tp_a_price), ("b", trade.tp_b_price)):
         leg = trade.a if leg_key == "a" else trade.b
@@ -172,7 +243,29 @@ def manage_trade(client, trade, open_orders, closed_orders):
         if leg["status"] == "entry_open":
             filled = _is_filled(open_orders, closed_orders, leg["entry_txid"])
             if filled:
-                _place_leg_tp(client, trade, leg_key, tp_price)
+                sl_txid = _find_sl_txid(open_orders, closed_orders, leg["entry_txid"])
+                sl_already_filled = _is_filled(open_orders, closed_orders, sl_txid) if sl_txid else None
+                if sl_already_filled:
+                    # own conditional stop already fired before the bot
+                    # noticed the entry was even filled -- a loss, and
+                    # nothing left to place a TP against.
+                    leg["status"] = "closed_sl"
+                    leg["sl_txid"] = sl_txid
+                else:
+                    leg["sl_txid"] = sl_txid
+                    try:
+                        _place_leg_tp(client, trade, leg_key, tp_price)
+                    except KrakenAPIError as e:
+                        _log.error(
+                            f"TP placement rejected for {trade.direction} leg {leg_key} "
+                            f"(entry={trade.entry_price}): {e} -- own SL hasn't fired, so "
+                            f"treating as externally closed rather than retrying forever")
+                        leg["status"] = "closed_external"
+                        if leg["sl_txid"]:
+                            try:
+                                client.cancel_order(leg["sl_txid"])
+                            except KrakenAPIError:
+                                pass  # already gone/cancelled -- fine, nothing to do
             elif filled is False:
                 leg["status"] = "cancelled"
 
@@ -189,23 +282,22 @@ def manage_trade(client, trade, open_orders, closed_orders):
             if tp_filled:
                 leg["status"] = "closed_tp"
                 if leg["sl_txid"]:
-                    client.cancel_order(leg["sl_txid"])
-                if leg_key == "a" and trade.b["status"] == "open_racing" and not trade.b["sl_at_be"]:
-                    # Position A hit R3 -> move runner's SL to breakeven
-                    if trade.b["sl_txid"] is None:
-                        trade.b["sl_txid"] = _find_sl_txid(open_orders, closed_orders,
-                                                            trade.b["entry_txid"])
-                    if trade.b["sl_txid"]:
-                        client.amend_order(trade.b["sl_txid"], trigger_price=trade.entry_price)
-                        trade.b["sl_at_be"] = True
+                    try:
+                        client.cancel_order(leg["sl_txid"])
+                    except KrakenAPIError as e:
+                        _log.error(f"failed to cancel SL {leg['sl_txid']} after TP fill: {e}")
 
             elif sl_filled:
                 leg["status"] = "closed_sl"
                 if leg["tp_txid"]:
-                    client.cancel_order(leg["tp_txid"])
+                    try:
+                        client.cancel_order(leg["tp_txid"])
+                    except KrakenAPIError as e:
+                        _log.error(f"failed to cancel TP {leg['tp_txid']} after SL fill: {e}")
 
-    both_done = trade.a["status"] in ("closed_tp", "closed_sl", "cancelled") and \
-        trade.b["status"] in ("closed_tp", "closed_sl", "cancelled")
+    _move_runner_to_be(client, trade, open_orders, closed_orders)
+
+    both_done = trade.a["status"] in TERMINAL and trade.b["status"] in TERMINAL
     return both_done
 
 
@@ -228,7 +320,11 @@ def cancel_unfilled(client, trade, current_bar_time, mitigation_wait_bars=200, c
     cancelled_any = False
     for leg in (trade.a, trade.b):
         if leg["status"] == "entry_open" and leg["entry_txid"]:
-            client.cancel_order(leg["entry_txid"])
-            leg["status"] = "cancelled"
-            cancelled_any = True
+            try:
+                client.cancel_order(leg["entry_txid"])
+                leg["status"] = "cancelled"
+                cancelled_any = True
+            except KrakenAPIError as e:
+                _log.error(f"failed to cancel unfilled entry {leg['entry_txid']}: {e} "
+                           f"-- will retry next cycle")
     return cancelled_any
