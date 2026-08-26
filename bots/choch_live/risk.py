@@ -100,6 +100,28 @@ class MarginFeasibility:
     max_margin_supported_risk_pct: float
 
 
+@dataclass(frozen=True)
+class MarginConstrainedSize:
+    intended_risk_cash: float
+    desired_units_before_caps: float
+    full_size_units: float
+    full_size_margin_required: float
+    full_target_risk_feasible: bool
+    margin_fallback_used: bool
+    margin_supported_units: float
+    final_units: float
+    signed_units: float
+    actual_risk_cash: float
+    actual_risk_pct: float
+    risk_per_unit: float
+    margin_required: float
+    margin_required_pct_of_nav: float
+    max_margin_supported_units: float
+    max_margin_supported_risk_cash: float
+    max_margin_supported_risk_pct: float
+    margin_floor_ok: bool
+
+
 def assess_margin_feasibility(
     *,
     account_nav: float,
@@ -135,6 +157,64 @@ def assess_margin_feasibility(
         max_margin_supported_units=float(max_units),
         max_margin_supported_risk_cash=float(supported_risk_cash),
         max_margin_supported_risk_pct=float(supported_risk_cash / account_nav),
+    )
+
+
+def constrain_shadow_position_to_margin(
+    *,
+    account_nav: float,
+    margin_available: float,
+    entry: float,
+    direction: str,
+    metadata: InstrumentMetadata,
+    quote_to_account_rate: float,
+    max_units: float,
+    min_margin_supported_risk_pct: float,
+    full_size: ShadowPositionSize,
+) -> MarginConstrainedSize:
+    if not (0 < min_margin_supported_risk_pct <= 1):
+        raise ValueError("min_margin_supported_risk_pct must be between 0 and 1")
+    feasibility = assess_margin_feasibility(
+        account_nav=account_nav,
+        margin_available=margin_available,
+        entry=entry,
+        metadata=metadata,
+        quote_to_account_rate=quote_to_account_rate,
+        risk_per_unit=full_size.risk_per_unit,
+        margin_required=full_size.margin_required,
+    )
+    margin_supported_units = min(feasibility.max_margin_supported_units, float(max_units), full_size.units)
+    margin_supported_units = _floor_to_precision(margin_supported_units, metadata.trade_units_precision)
+    if margin_supported_units < metadata.minimum_trade_size:
+        margin_supported_units = 0.0
+
+    fallback_used = not feasibility.full_target_risk_feasible
+    final_units = margin_supported_units if fallback_used else full_size.units
+    actual_risk_cash = final_units * full_size.risk_per_unit
+    actual_risk_pct = actual_risk_cash / account_nav
+    margin_required = final_units * entry * metadata.margin_rate * quote_to_account_rate
+    margin_floor_ok = (not fallback_used) or actual_risk_pct >= min_margin_supported_risk_pct - 1e-12
+    signed_units = final_units if direction == "bullish" else -final_units
+
+    return MarginConstrainedSize(
+        intended_risk_cash=full_size.intended_risk_cash,
+        desired_units_before_caps=full_size.desired_units_before_caps,
+        full_size_units=full_size.units,
+        full_size_margin_required=full_size.margin_required,
+        full_target_risk_feasible=feasibility.full_target_risk_feasible,
+        margin_fallback_used=fallback_used,
+        margin_supported_units=float(margin_supported_units),
+        final_units=float(final_units),
+        signed_units=float(signed_units),
+        actual_risk_cash=float(actual_risk_cash),
+        actual_risk_pct=float(actual_risk_pct),
+        risk_per_unit=full_size.risk_per_unit,
+        margin_required=float(margin_required),
+        margin_required_pct_of_nav=float(margin_required / account_nav),
+        max_margin_supported_units=float(margin_supported_units),
+        max_margin_supported_risk_cash=float(margin_supported_units * full_size.risk_per_unit),
+        max_margin_supported_risk_pct=float((margin_supported_units * full_size.risk_per_unit) / account_nav),
+        margin_floor_ok=bool(margin_floor_ok),
     )
 
 

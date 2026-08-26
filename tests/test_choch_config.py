@@ -30,6 +30,7 @@ def valid_cfg() -> dict:
         "s2_timeframe": "M10",
         "risk_pct": 0.01,
         "max_account_risk_open": 0.02,
+        "min_margin_supported_risk_pct": 0.004,
         "max_units": 1000,
     }
 
@@ -41,6 +42,7 @@ class TestChochConfig(unittest.TestCase):
         self.assertEqual(cfg.account_id, BASE_ENV["CHOCH_EXPECTED_ACCOUNT_ID"])
         self.assertEqual(cfg.s2_timeframe, "M10")
         self.assertEqual(cfg.instrument_names, ("EUR_USD", "NAS100_USD"))
+        self.assertEqual(cfg.min_margin_supported_risk_pct, 0.004)
 
     def test_placeholder_account_rejected(self):
         cfg = valid_cfg()

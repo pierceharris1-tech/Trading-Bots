@@ -12,7 +12,7 @@ from bots.choch_live.logging import get_choch_logger
 from bots.choch_live.models import EventType
 from bots.choch_live.risk import (
     assess_aggregate_risk_admission,
-    assess_margin_feasibility,
+    constrain_shadow_position_to_margin,
     quote_currency,
     size_shadow_position,
 )
@@ -290,16 +290,17 @@ class ChochEngine:
                 quote_to_account_rate=conversion,
                 max_units=max_units,
             )
-            feasibility = assess_margin_feasibility(
+            constrained_size = constrain_shadow_position_to_margin(
                 account_nav=nav,
                 margin_available=margin_available,
                 entry=result.entry,
+                direction=direction or result.direction,
                 metadata=metadata,
                 quote_to_account_rate=conversion,
-                risk_per_unit=size.risk_per_unit,
-                margin_required=size.margin_required,
+                max_units=max_units,
+                min_margin_supported_risk_pct=self.config.min_margin_supported_risk_pct,
+                full_size=size,
             )
-            margin_ok = feasibility.full_target_risk_feasible
             existing_risk = self.state.aggregate_open_risk_cash(
                 bot_id=self.config.bot_id,
                 account_id=self.config.account_id,
@@ -309,63 +310,72 @@ class ChochEngine:
                 nav=nav,
                 max_account_risk_open=self.config.max_account_risk_open,
                 existing_risk_cash=existing_risk,
-                candidate_intended_risk_cash=size.intended_risk_cash,
-                candidate_actual_risk_cash=size.actual_risk_cash,
+                candidate_intended_risk_cash=constrained_size.intended_risk_cash,
+                candidate_actual_risk_cash=constrained_size.actual_risk_cash,
             )
-            admitted = admission.admitted and margin_ok
+            admitted = constrained_size.margin_floor_ok and admission.admitted
             rejection_reason = admission.rejection_reason
-            if not margin_ok:
-                rejection_reason = "margin_insufficient"
+            if not constrained_size.margin_floor_ok:
+                rejection_reason = "margin_supported_risk_below_floor"
             self.log.info(
                 "CHOCH_RISK_ADMISSION | instrument=%s | strategy_leg=%s | nav=%s | aggregate_cap_pct=%s "
-                "| aggregate_cap_cash=%s | existing_choch_risk_cash=%s | candidate_intended_risk_cash=%s "
-                "| candidate_actual_risk_cash=%s | resulting_aggregate_risk_cash=%s | margin_required=%s "
-                "| margin_available=%s | margin_required_pct_of_nav=%s | desired_units_before_caps=%s "
-                "| final_units=%s | full_target_risk_feasible=%s | max_margin_supported_units=%s "
-                "| max_margin_supported_risk_cash=%s | max_margin_supported_risk_pct=%s | margin_ok=%s "
-                "| admitted=%s | rejection_reason=%s",
+                "| aggregate_cap_cash=%s | intended_risk_pct=%s | intended_risk_cash=%s "
+                "| desired_units_before_caps=%s | full_size_units=%s | full_size_margin_required=%s "
+                "| full_target_risk_feasible=%s | margin_fallback_used=%s | margin_supported_units=%s "
+                "| final_units=%s | actual_risk_cash=%s | actual_risk_pct=%s "
+                "| min_margin_supported_risk_pct=%s | margin_required=%s | margin_available=%s "
+                "| margin_required_pct_of_nav=%s | existing_choch_risk_cash=%s "
+                "| resulting_aggregate_risk_cash=%s | admitted=%s | rejection_reason=%s",
                 instrument,
                 strategy_leg,
                 nav,
                 self.config.max_account_risk_open,
                 admission.aggregate_cap_cash,
-                admission.existing_risk_cash,
-                size.intended_risk_cash,
-                size.actual_risk_cash,
-                admission.resulting_aggregate_risk_cash,
-                size.margin_required,
+                self.config.risk_pct,
+                constrained_size.intended_risk_cash,
+                constrained_size.desired_units_before_caps,
+                constrained_size.full_size_units,
+                constrained_size.full_size_margin_required,
+                constrained_size.full_target_risk_feasible,
+                constrained_size.margin_fallback_used,
+                constrained_size.margin_supported_units,
+                constrained_size.final_units,
+                constrained_size.actual_risk_cash,
+                constrained_size.actual_risk_pct,
+                self.config.min_margin_supported_risk_pct,
+                constrained_size.margin_required,
                 margin_available,
-                feasibility.margin_required_pct_of_nav,
-                size.desired_units_before_caps,
-                size.units,
-                feasibility.full_target_risk_feasible,
-                feasibility.max_margin_supported_units,
-                feasibility.max_margin_supported_risk_cash,
-                feasibility.max_margin_supported_risk_pct,
-                margin_ok,
+                constrained_size.margin_required_pct_of_nav,
+                admission.existing_risk_cash,
+                admission.resulting_aggregate_risk_cash,
                 admitted,
                 rejection_reason,
             )
             return {
                 "nav": nav,
                 "intended_risk_pct": self.config.risk_pct,
-                "risk_cash": size.risk_cash,
-                "intended_risk_cash": size.intended_risk_cash,
-                "desired_units_before_caps": size.desired_units_before_caps,
-                "actual_risk_cash": size.actual_risk_cash,
-                "actual_risk_pct": size.actual_risk_pct,
-                "risk_per_unit": size.risk_per_unit,
-                "units": size.units,
-                "final_units": size.units,
-                "signed_units": size.signed_units,
-                "margin_required": size.margin_required,
+                "risk_cash": constrained_size.intended_risk_cash,
+                "intended_risk_cash": constrained_size.intended_risk_cash,
+                "desired_units_before_caps": constrained_size.desired_units_before_caps,
+                "full_size_units": constrained_size.full_size_units,
+                "full_size_margin_required": constrained_size.full_size_margin_required,
+                "full_target_risk_feasible": constrained_size.full_target_risk_feasible,
+                "margin_fallback_used": constrained_size.margin_fallback_used,
+                "margin_supported_units": constrained_size.margin_supported_units,
+                "actual_risk_cash": constrained_size.actual_risk_cash,
+                "actual_risk_pct": constrained_size.actual_risk_pct,
+                "risk_per_unit": constrained_size.risk_per_unit,
+                "units": constrained_size.final_units,
+                "final_units": constrained_size.final_units,
+                "signed_units": constrained_size.signed_units,
+                "margin_required": constrained_size.margin_required,
                 "margin_available": margin_available,
-                "margin_required_pct_of_nav": feasibility.margin_required_pct_of_nav,
-                "margin_ok": margin_ok,
-                "full_target_risk_feasible": feasibility.full_target_risk_feasible,
-                "max_margin_supported_units": feasibility.max_margin_supported_units,
-                "max_margin_supported_risk_cash": feasibility.max_margin_supported_risk_cash,
-                "max_margin_supported_risk_pct": feasibility.max_margin_supported_risk_pct,
+                "margin_required_pct_of_nav": constrained_size.margin_required_pct_of_nav,
+                "margin_ok": constrained_size.full_target_risk_feasible,
+                "max_margin_supported_units": constrained_size.max_margin_supported_units,
+                "max_margin_supported_risk_cash": constrained_size.max_margin_supported_risk_cash,
+                "max_margin_supported_risk_pct": constrained_size.max_margin_supported_risk_pct,
+                "min_margin_supported_risk_pct": self.config.min_margin_supported_risk_pct,
                 "margin_rate": metadata.margin_rate,
                 "effective_leverage": metadata.effective_leverage,
                 "quote_to_account_rate": conversion,

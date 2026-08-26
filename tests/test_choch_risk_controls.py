@@ -16,7 +16,12 @@ from bots.choch_live.state import ChochStateStore
 from shared.config import Settings
 
 
-def config(*, max_units: int = 1_000_000, eur_max_units: int | None = 1_000_000) -> ChochConfig:
+def config(
+    *,
+    max_units: int = 1_000_000,
+    eur_max_units: int | None = 1_000_000,
+    max_account_risk_open: float = 0.04,
+) -> ChochConfig:
     settings = Settings(
         oanda_api_key="k",
         oanda_env="practice",
@@ -41,7 +46,8 @@ def config(*, max_units: int = 1_000_000, eur_max_units: int | None = 1_000_000)
         s1_timeframe="H1",
         s2_timeframe="M10",
         risk_pct=0.02,
-        max_account_risk_open=0.04,
+        max_account_risk_open=max_account_risk_open,
+        min_margin_supported_risk_pct=0.004,
         max_units=max_units,
         settings=settings,
     )
@@ -338,14 +344,67 @@ class TestChochRiskControls(unittest.TestCase):
         self.assertFalse(sizing["margin_ok"])
         self.assertFalse(sizing["full_target_risk_feasible"])
         self.assertFalse(sizing["admitted"])
-        self.assertEqual(sizing["rejection_reason"], "margin_insufficient")
+        self.assertEqual(sizing["rejection_reason"], "margin_supported_risk_below_floor")
         self.assertEqual(sizing["intended_risk_pct"], 0.02)
         self.assertAlmostEqual(sizing["desired_units_before_caps"], 250_000.0)
-        self.assertEqual(sizing["final_units"], 250_000)
+        self.assertEqual(sizing["full_size_units"], 250_000)
+        self.assertEqual(sizing["final_units"], 34)
         self.assertAlmostEqual(sizing["margin_required_pct_of_nav"], sizing["margin_required"] / 100_000.0)
         self.assertAlmostEqual(sizing["max_margin_supported_risk_cash"], 0.272)
         self.assertAlmostEqual(sizing["max_margin_supported_risk_pct"], 0.00000272)
-        self.assertEqual(sizing["units"], 250_000)
+        self.assertEqual(sizing["units"], 34)
+
+    def test_reduced_candidate_rejected_when_aggregate_cap_exceeded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ChochStateStore(Path(tmp) / "state.db")
+            store.ensure_schema()
+            with store.session() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO choch_trades (
+                        bot_id, account_id, instrument, strategy_leg, client_order_key,
+                        state, actual_risk_cash, is_simulated
+                    )
+                    VALUES ('CHOCH_TEST', '101-004-00000000-999', 'EUR_USD', 'S1',
+                            'existing-risk', 'filled', 2100, 1)
+                    """
+                )
+            engine = ChochEngine(config=config(), broker=FakeBroker(margin_available=7_000.0), state=store)
+
+            sizing = engine._estimate_shadow_sizing(instrument="EUR_USD", result=s1_candidate())
+
+            self.assertIsNotNone(sizing)
+            self.assertTrue(sizing["margin_fallback_used"])
+            self.assertAlmostEqual(sizing["actual_risk_cash"], 1_909.088)
+            self.assertAlmostEqual(sizing["existing_choch_risk_cash"], 2_100.0)
+            self.assertFalse(sizing["admitted"])
+            self.assertEqual(sizing["rejection_reason"], "aggregate_risk_cap_exceeded")
+
+    def test_reduced_candidate_admitted_when_aggregate_cap_fits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ChochStateStore(Path(tmp) / "state.db")
+            store.ensure_schema()
+            with store.session() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO choch_trades (
+                        bot_id, account_id, instrument, strategy_leg, client_order_key,
+                        state, actual_risk_cash, is_simulated
+                    )
+                    VALUES ('CHOCH_TEST', '101-004-00000000-999', 'EUR_USD', 'S1',
+                            'existing-risk', 'filled', 2000, 1)
+                    """
+                )
+            engine = ChochEngine(config=config(), broker=FakeBroker(margin_available=7_000.0), state=store)
+
+            sizing = engine._estimate_shadow_sizing(instrument="EUR_USD", result=s1_candidate())
+
+            self.assertIsNotNone(sizing)
+            self.assertTrue(sizing["margin_fallback_used"])
+            self.assertAlmostEqual(sizing["actual_risk_cash"], 1_909.088)
+            self.assertAlmostEqual(sizing["resulting_aggregate_risk_cash"], 3_909.088)
+            self.assertTrue(sizing["admitted"])
+            self.assertIsNone(sizing["rejection_reason"])
 
     def test_persisted_simulated_risk_feeds_next_aggregate_admission(self):
         with tempfile.TemporaryDirectory() as tmp:

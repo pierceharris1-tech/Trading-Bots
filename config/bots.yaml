@@ -295,3 +295,4 @@ CHOCH_OANDA_PRACTICE_v1:
   s2_timeframe: M10
   risk_pct: 0.02
   max_account_risk_open: 0.04
+  min_margin_supported_risk_pct: 0.004

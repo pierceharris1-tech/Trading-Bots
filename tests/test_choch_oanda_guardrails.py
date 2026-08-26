@@ -35,6 +35,7 @@ def config() -> ChochConfig:
         s2_timeframe="M10",
         risk_pct=0.01,
         max_account_risk_open=0.02,
+        min_margin_supported_risk_pct=0.004,
         max_units=1000,
         settings=settings,
     )

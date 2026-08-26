@@ -26,6 +26,7 @@ class ChochConfig:
     s2_timeframe: str
     risk_pct: float
     max_account_risk_open: float
+    min_margin_supported_risk_pct: float
     max_units: int
     settings: Settings
 
@@ -125,11 +126,16 @@ def load_choch_config(cfg: dict[str, Any]) -> ChochConfig:
 
     risk_pct = float(cfg.get("risk_pct", 0.01))
     max_account_risk_open = float(cfg.get("max_account_risk_open", 0.02))
+    min_margin_supported_risk_pct = float(cfg.get("min_margin_supported_risk_pct", 0.004))
     max_units = int(cfg.get("max_units", 1000))
     if not (0 < risk_pct <= 0.05):
         raise RuntimeError("CHoCH config invalid: risk_pct must be > 0 and <= 0.05")
     if not (0 < max_account_risk_open <= 0.20):
         raise RuntimeError("CHoCH config invalid: max_account_risk_open must be > 0 and <= 0.20")
+    if not (0 < min_margin_supported_risk_pct <= risk_pct):
+        raise RuntimeError(
+            "CHoCH config invalid: min_margin_supported_risk_pct must be > 0 and <= risk_pct"
+        )
     if max_units <= 0:
         raise RuntimeError("CHoCH config invalid: max_units must be positive")
     for instrument in instruments:
@@ -151,6 +157,7 @@ def load_choch_config(cfg: dict[str, Any]) -> ChochConfig:
         s2_timeframe=s2_timeframe,
         risk_pct=risk_pct,
         max_account_risk_open=max_account_risk_open,
+        min_margin_supported_risk_pct=min_margin_supported_risk_pct,
         max_units=max_units,
         settings=settings,
     )
