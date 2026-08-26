@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import replace
+from unittest.mock import patch
 
 from bots.choch_live.broker import ChochBroker
 from bots.choch_live.config import ChochConfig
@@ -9,7 +10,7 @@ from bots.choch_live.models import InstrumentConfig
 from shared.config import Settings
 
 
-def config() -> ChochConfig:
+def config(*, trading_enabled: bool = False, dry_run: bool = True, env_trading_enabled: bool = False) -> ChochConfig:
     settings = Settings(
         oanda_api_key="k",
         oanda_env="practice",
@@ -24,9 +25,9 @@ def config() -> ChochConfig:
         account_id="101-004-00000000-999",
         expected_account_id="101-004-00000000-999",
         allowed_oanda_env="practice",
-        trading_enabled=False,
-        env_trading_enabled=False,
-        dry_run=True,
+        trading_enabled=trading_enabled,
+        env_trading_enabled=env_trading_enabled,
+        dry_run=dry_run,
         instruments=(
             InstrumentConfig(key="eur_usd", name="EUR_USD"),
             InstrumentConfig(key="nasdaq_100", name="NAS100_USD"),
@@ -48,6 +49,9 @@ class FakeClient:
         self._instruments = instruments or ["EUR_USD", "NAS100_USD"]
         self._prices = prices or {}
         self.price_calls = []
+        self.orders = []
+        self.trades = []
+        self.fail_next_order = False
 
     def get_account_summary(self):
         return {"account": {"id": self._account_id, "currency": "GBP", "lastTransactionID": "42"}}
@@ -97,6 +101,31 @@ class FakeClient:
     def get_price(self, instrument):
         self.price_calls.append(instrument)
         return self._prices.get(instrument)
+
+    def get_pending_orders(self):
+        return {"orders": self.orders}
+
+    def get_open_trades(self):
+        return {"trades": self.trades}
+
+    def place_limit_order(self, **kwargs):
+        if self.fail_next_order:
+            self.fail_next_order = False
+            raise RuntimeError("timeout")
+        self.orders.append(
+            {
+                "id": str(100 + len(self.orders)),
+                "instrument": kwargs["instrument"],
+                "clientExtensions": {"id": kwargs["client_order_id"]},
+            }
+        )
+        return {"orderCreateTransaction": {"id": self.orders[-1]["id"]}}
+
+    def cancel_order(self, order_id):
+        return {"orderCancelTransaction": {"id": "cancel-1", "orderID": order_id}}
+
+    def close_trade(self, trade_id):
+        return {"orderFillTransaction": {"id": "close-1", "tradeClosed": {"tradeID": trade_id}}}
 
 
 class TestChochOandaGuardrails(unittest.TestCase):
@@ -165,8 +194,66 @@ class TestChochOandaGuardrails(unittest.TestCase):
         broker = ChochBroker(config())
         for method_name in ("place_order", "replace_order", "cancel_order", "close_trade"):
             with self.subTest(method=method_name):
-                with self.assertRaisesRegex(RuntimeError, "Broker writes disabled"):
+                with self.assertRaisesRegex(RuntimeError, "broker write rejected"):
                     getattr(broker, method_name)()
+
+    def test_all_practice_gates_enable_writes(self):
+        with patch.dict("os.environ", {"CHOCH_TRADING_ENABLED": "1"}, clear=False):
+            broker = ChochBroker(config(trading_enabled=True, dry_run=False, env_trading_enabled=True))
+            broker.client = FakeClient()
+            broker.validate_expected_account()
+            self.assertTrue(broker.broker_writes_enabled())
+
+    def test_production_url_always_rejected_even_when_other_gates_enabled(self):
+        with patch.dict("os.environ", {"CHOCH_TRADING_ENABLED": "1"}, clear=False):
+            base = config(trading_enabled=True, dry_run=False, env_trading_enabled=True)
+            cfg = replace(base, settings=replace(base.settings, base_url="https://api-fxtrade.oanda.com"))
+            broker = ChochBroker(cfg)
+            broker.client = FakeClient()
+            broker.client.base_url = "https://api-fxtrade.oanda.com"
+            broker.load_account_metadata()
+            self.assertFalse(broker.broker_writes_enabled())
+            with self.assertRaisesRegex(RuntimeError, "practice REST host"):
+                broker.cancel_order("1")
+
+    def test_idempotent_submit_returns_existing_pending_order_without_duplicate(self):
+        with patch.dict("os.environ", {"CHOCH_TRADING_ENABLED": "1"}, clear=False):
+            broker = ChochBroker(config(trading_enabled=True, dry_run=False, env_trading_enabled=True))
+            broker.client = FakeClient()
+            broker.validate_expected_account()
+            broker.client.orders.append({"id": "existing", "clientExtensions": {"id": "key-1"}, "instrument": "EUR_USD"})
+            response = broker.submit_limit_order_idempotent(
+                client_order_id="key-1",
+                instrument="EUR_USD",
+                signed_units=1000,
+                price=1.1,
+                stop_loss=1.09,
+                take_profit=1.115,
+            )
+            self.assertTrue(response["existing"])
+            self.assertEqual(len(broker.client.orders), 1)
+
+    def test_timeout_then_existing_broker_order_does_not_duplicate(self):
+        with patch.dict("os.environ", {"CHOCH_TRADING_ENABLED": "1"}, clear=False):
+            broker = ChochBroker(config(trading_enabled=True, dry_run=False, env_trading_enabled=True))
+            broker.client = FakeClient()
+            broker.validate_expected_account()
+            broker.client.fail_next_order = True
+
+            def existing_after_timeout():
+                return {"orders": [{"id": "after-timeout", "clientExtensions": {"id": "key-1"}, "instrument": "EUR_USD"}]}
+
+            broker.client.get_pending_orders = existing_after_timeout
+            response = broker.submit_limit_order_idempotent(
+                client_order_id="key-1",
+                instrument="EUR_USD",
+                signed_units=1000,
+                price=1.1,
+                stop_loss=1.09,
+                take_profit=1.115,
+            )
+            self.assertTrue(response["existing"])
+            self.assertEqual(response["order"]["id"], "after-timeout")
 
     def test_conversion_same_currency_is_one_without_price_lookup(self):
         broker = ChochBroker(config())
@@ -220,7 +307,7 @@ class TestChochOandaGuardrails(unittest.TestCase):
         self.assertEqual(broker.client.price_calls, [])
         for method_name in ("place_order", "replace_order", "cancel_order", "close_trade"):
             with self.subTest(method=method_name):
-                with self.assertRaisesRegex(RuntimeError, "Broker writes disabled"):
+                with self.assertRaisesRegex(RuntimeError, "broker write rejected"):
                     getattr(broker, method_name)()
 
 

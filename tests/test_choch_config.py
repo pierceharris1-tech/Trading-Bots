@@ -79,19 +79,19 @@ class TestChochConfig(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "does not match"):
                 load_choch_config(cfg)
 
-    def test_trading_enabled_rejected(self):
+    def test_trading_enabled_can_load_but_does_not_enable_broker_without_all_gates(self):
         cfg = valid_cfg()
         cfg["trading_enabled"] = True
         with patch.dict("os.environ", BASE_ENV, clear=True):
-            with self.assertRaisesRegex(RuntimeError, "does not permit broker writes"):
-                load_choch_config(cfg)
+            loaded = load_choch_config(cfg)
+        self.assertTrue(loaded.trading_enabled)
 
-    def test_env_kill_switch_enabled_rejected(self):
+    def test_env_kill_switch_can_load_but_broker_gate_still_controls_writes(self):
         env = dict(BASE_ENV)
         env["CHOCH_TRADING_ENABLED"] = "1"
         with patch.dict("os.environ", env, clear=True):
-            with self.assertRaisesRegex(RuntimeError, "does not permit broker writes"):
-                load_choch_config(valid_cfg())
+            loaded = load_choch_config(valid_cfg())
+        self.assertTrue(loaded.env_trading_enabled)
 
     def test_missing_eur_usd_rejected(self):
         cfg = valid_cfg()

@@ -37,6 +37,11 @@ def main(cfg: dict | None = None) -> None:
             trading_enabled=config.trading_enabled,
             dry_run=config.dry_run,
         )
+        log.info(
+            "CHOCH_EXECUTION_MODE | environment=%s | broker_writes_enabled=%s | historical_replay_execution_enabled=false",
+            config.settings.oanda_env,
+            broker.broker_writes_enabled(),
+        )
     except Exception as exc:
         bot_id = str(raw_cfg.get("bot_id", "UNKNOWN_BOT"))
         account_id = str(raw_cfg.get("account_id", "UNKNOWN_ACCOUNT"))

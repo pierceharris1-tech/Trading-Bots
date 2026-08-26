@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import pandas as pd
@@ -34,6 +35,35 @@ class ChochBroker:
             raise RuntimeError("CHoCH requires OANDA practice REST host")
         if self.config.allowed_oanda_env != "practice":
             raise RuntimeError("CHoCH config requires allowed_oanda_env=practice")
+
+    def broker_writes_enabled(self) -> bool:
+        return (
+            self.config.settings.oanda_env == "practice"
+            and self.client.base_url.rstrip("/") == PRACTICE_URL
+            and self.config.allowed_oanda_env == "practice"
+            and self.config.account_id == self.config.expected_account_id
+            and self.account_metadata is not None
+            and self.account_metadata.account_id == self.config.expected_account_id
+            and self.config.trading_enabled
+            and not self.config.dry_run
+            and self.config.env_trading_enabled
+            and str(os.getenv("CHOCH_TRADING_ENABLED", "0")).strip() == "1"
+        )
+
+    def require_broker_writes_enabled(self) -> None:
+        self.validate_practice_environment()
+        if self.config.account_id != self.config.expected_account_id:
+            raise RuntimeError("CHoCH broker write rejected: account_id does not match expected practice account")
+        if self.account_metadata is None:
+            raise RuntimeError("CHoCH broker write rejected: account metadata not loaded")
+        if self.account_metadata.account_id != self.config.expected_account_id:
+            raise RuntimeError("CHoCH broker write rejected: loaded account is not expected practice account")
+        if not self.config.trading_enabled:
+            raise RuntimeError("CHoCH broker write rejected: trading_enabled=false")
+        if self.config.dry_run:
+            raise RuntimeError("CHoCH broker write rejected: dry_run=true")
+        if not self.config.env_trading_enabled or str(os.getenv("CHOCH_TRADING_ENABLED", "0")).strip() != "1":
+            raise RuntimeError("CHoCH broker write rejected: CHOCH_TRADING_ENABLED is not 1")
 
     def load_account_metadata(self) -> AccountMetadata:
         summary = self.client.get_account_summary()
@@ -127,6 +157,9 @@ class ChochBroker:
             return self.client.get_transactions_since(self.account_metadata.last_transaction_id)
         return {}
 
+    def get_transactions_since(self, transaction_id: str) -> dict[str, Any]:
+        return self.client.get_transactions_since(transaction_id)
+
     def get_account_nav(self) -> float:
         return self.client.get_account_nav()
 
@@ -168,14 +201,126 @@ class ChochBroker:
 
         raise RuntimeError(f"No conversion price available for {quote}->{account_currency}")
 
-    def place_order(self, *args, **kwargs):
-        raise RuntimeError("Broker writes disabled by CHoCH safety gate")
+    def find_pending_order_by_client_id(self, client_order_id: str) -> dict[str, Any] | None:
+        for order in self.get_pending_orders().get("orders", []):
+            extensions = order.get("clientExtensions") or {}
+            if str(extensions.get("id") or "") == client_order_id:
+                return order
+        return None
 
-    def replace_order(self, *args, **kwargs):
-        raise RuntimeError("Broker writes disabled by CHoCH safety gate")
+    def find_open_trade_by_client_id(self, client_order_id: str) -> dict[str, Any] | None:
+        for trade in self.get_open_trades().get("trades", []):
+            extensions = trade.get("clientExtensions") or {}
+            if str(extensions.get("id") or "") == client_order_id:
+                return trade
+        return None
 
-    def cancel_order(self, *args, **kwargs):
-        raise RuntimeError("Broker writes disabled by CHoCH safety gate")
+    def submit_limit_order_idempotent(
+        self,
+        *,
+        client_order_id: str,
+        instrument: str,
+        signed_units: float,
+        price: float,
+        stop_loss: float,
+        take_profit: float,
+    ) -> dict[str, Any]:
+        self.require_broker_writes_enabled()
+        existing_order = self.find_pending_order_by_client_id(client_order_id)
+        if existing_order is not None:
+            return {"existing": True, "order": existing_order}
+        existing_trade = self.find_open_trade_by_client_id(client_order_id)
+        if existing_trade is not None:
+            return {"existing": True, "trade": existing_trade}
+        try:
+            return self.client.place_limit_order(
+                units=signed_units,
+                instrument=instrument,
+                price=price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                client_order_id=client_order_id,
+                client_tag=f"{self.config.bot_id}|CHOCH",
+            )
+        except Exception:
+            existing_order = self.find_pending_order_by_client_id(client_order_id)
+            if existing_order is not None:
+                return {"existing": True, "order": existing_order}
+            existing_trade = self.find_open_trade_by_client_id(client_order_id)
+            if existing_trade is not None:
+                return {"existing": True, "trade": existing_trade}
+            raise
 
-    def close_trade(self, *args, **kwargs):
-        raise RuntimeError("Broker writes disabled by CHoCH safety gate")
+    def submit_market_order_idempotent(
+        self,
+        *,
+        client_order_id: str,
+        instrument: str,
+        signed_units: float,
+        stop_loss: float,
+        take_profit: float,
+    ) -> dict[str, Any]:
+        self.require_broker_writes_enabled()
+        existing_trade = self.find_open_trade_by_client_id(client_order_id)
+        if existing_trade is not None:
+            return {"existing": True, "trade": existing_trade}
+        existing_order = self.find_pending_order_by_client_id(client_order_id)
+        if existing_order is not None:
+            return {"existing": True, "order": existing_order}
+        try:
+            return self.client.place_market_order(
+                units=signed_units,
+                instrument=instrument,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                client_order_id=client_order_id,
+                client_tag=f"{self.config.bot_id}|CHOCH",
+            )
+        except Exception:
+            existing_trade = self.find_open_trade_by_client_id(client_order_id)
+            if existing_trade is not None:
+                return {"existing": True, "trade": existing_trade}
+            existing_order = self.find_pending_order_by_client_id(client_order_id)
+            if existing_order is not None:
+                return {"existing": True, "order": existing_order}
+            raise
+
+    def place_order(self, **kwargs) -> dict[str, Any]:
+        self.require_broker_writes_enabled()
+        return self.submit_limit_order_idempotent(**kwargs)
+
+    def replace_order(
+        self,
+        *,
+        order_id: str | None = None,
+        client_order_id: str | None = None,
+        instrument: str | None = None,
+        signed_units: float | None = None,
+        price: float | None = None,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
+    ) -> dict[str, Any]:
+        self.require_broker_writes_enabled()
+        if None in (order_id, client_order_id, instrument, signed_units, price, stop_loss, take_profit):
+            raise TypeError("replace_order requires order_id, client_order_id, instrument, signed_units, price, stop_loss, take_profit")
+        self.client.cancel_order(order_id)
+        return self.submit_limit_order_idempotent(
+            client_order_id=client_order_id,
+            instrument=instrument,
+            signed_units=signed_units,
+            price=price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+        )
+
+    def cancel_order(self, order_id: str | None = None) -> dict[str, Any]:
+        self.require_broker_writes_enabled()
+        if order_id is None:
+            raise TypeError("cancel_order requires order_id")
+        return self.client.cancel_order(order_id)
+
+    def close_trade(self, trade_id: str | None = None) -> dict[str, Any]:
+        self.require_broker_writes_enabled()
+        if trade_id is None:
+            raise TypeError("close_trade requires trade_id")
+        return self.client.close_trade(trade_id)

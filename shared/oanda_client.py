@@ -107,6 +107,10 @@ class OandaClient:
         d = Decimal(str(price)).quantize(q, rounding=ROUND_HALF_UP)
         return format(d, "f")
 
+    def _fmt_units(self, units: float | int) -> str:
+        d = Decimal(str(units)).normalize()
+        return format(d, "f")
+
     def _request(
         self,
         method: str,
@@ -258,10 +262,12 @@ class OandaClient:
     def place_market_order(
         self,
         *,
-        units: int,
+        units: float,
         instrument: str,
         stop_loss: Optional[float] = None,
         take_profit: Optional[float] = None,
+        client_order_id: str | None = None,
+        client_tag: str | None = None,
     ) -> dict[str, Any]:
         """
         Places a MARKET order, optionally with attached SL/TP ("bracket"/OCO-style).
@@ -271,14 +277,17 @@ class OandaClient:
           - prices must be strings
           - timeInForce for attached orders typically "GTC"
         """
+        extensions = self._order_extensions()
+        if client_order_id is not None:
+            extensions = {"id": client_order_id, "tag": client_tag or self.order_tag}
         order: dict[str, Any] = {
             "type": "MARKET",
             "instrument": instrument,
-            "units": str(int(units)),
+            "units": self._fmt_units(units),
             "timeInForce": "FOK",
             "positionFill": "DEFAULT",
-            "clientExtensions": self._order_extensions(),
-            "tradeClientExtensions": self._order_extensions(),
+            "clientExtensions": extensions,
+            "tradeClientExtensions": extensions,
         }
 
         # Attach SL/TP if provided
@@ -303,7 +312,7 @@ class OandaClient:
                 "account_id": self.account_id,
                 "instrument": instrument,
                 "order_type": "MARKET",
-                "units": int(units),
+                "units": units,
                 "stop_loss": stop_loss,
                 "take_profit": take_profit,
                 "tag": self.order_tag,
@@ -313,25 +322,30 @@ class OandaClient:
     def place_limit_order(
         self,
         *,
-        units: int,
+        units: float,
         instrument: str,
         price: float,
         stop_loss: Optional[float] = None,
         take_profit: Optional[float] = None,
         time_in_force: str = "GTC",
+        client_order_id: str | None = None,
+        client_tag: str | None = None,
     ) -> dict[str, Any]:
         """
         Places a LIMIT order at a specified price, optionally with attached SL/TP.
         """
+        extensions = self._order_extensions()
+        if client_order_id is not None:
+            extensions = {"id": client_order_id, "tag": client_tag or self.order_tag}
         order: dict[str, Any] = {
             "type": "LIMIT",
             "instrument": instrument,
-            "units": str(int(units)),
+            "units": self._fmt_units(units),
             "price": self._fmt_price(instrument, float(price)),
             "timeInForce": time_in_force,
             "positionFill": "DEFAULT",
-            "clientExtensions": self._order_extensions(),
-            "tradeClientExtensions": self._order_extensions(),
+            "clientExtensions": extensions,
+            "tradeClientExtensions": extensions,
         }
 
         if take_profit is not None:

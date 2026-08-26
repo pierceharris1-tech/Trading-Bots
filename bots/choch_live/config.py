@@ -103,12 +103,8 @@ def load_choch_config(cfg: dict[str, Any]) -> ChochConfig:
 
     trading_enabled = _bool_cfg(cfg.get("trading_enabled"), default=False)
     env_trading_enabled = _env_truthy("CHOCH_TRADING_ENABLED")
-    if trading_enabled or env_trading_enabled:
-        raise RuntimeError("CHoCH Phase 1 does not permit broker writes; trading must remain disabled")
 
     dry_run = _bool_cfg(cfg.get("dry_run"), default=True)
-    if not dry_run:
-        raise RuntimeError("CHoCH Phase 1 requires dry_run=true")
 
     instruments = _parse_instruments(cfg.get("instruments"))
     instrument_names = tuple(instrument.name for instrument in instruments)

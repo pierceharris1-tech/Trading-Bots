@@ -66,6 +66,8 @@ class ChochStateStore:
                     r_value REAL,
                     parent_s1_trade_id TEXT,
                     s1_tp_time TEXT,
+                    observation_start_time TEXT,
+                    expected_decision_time TEXT,
                     client_order_key TEXT,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -86,6 +88,7 @@ class ChochStateStore:
                     order_type TEXT,
                     price REAL,
                     stop_price REAL,
+                    tp_price REAL,
                     units INTEGER,
                     signed_units REAL,
                     intended_risk_cash REAL,
@@ -166,19 +169,34 @@ class ChochStateStore:
                     status TEXT NOT NULL,
                     PRIMARY KEY (bot_id, account_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS choch_execution_watermarks (
+                    bot_id TEXT NOT NULL,
+                    account_id TEXT NOT NULL,
+                    instrument TEXT NOT NULL,
+                    granularity TEXT NOT NULL,
+                    execution_watermark_time TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (bot_id, account_id, instrument, granularity)
+                );
                 """
             )
             self._ensure_column(conn, "choch_setups", "r_value", "REAL")
             self._ensure_column(conn, "choch_setups", "parent_s1_trade_id", "TEXT")
             self._ensure_column(conn, "choch_setups", "s1_tp_time", "TEXT")
+            self._ensure_column(conn, "choch_setups", "observation_start_time", "TEXT")
+            self._ensure_column(conn, "choch_setups", "expected_decision_time", "TEXT")
             self._ensure_column(conn, "choch_setups", "cancellation_reason", "TEXT")
             self._ensure_column(conn, "choch_setups", "is_simulated", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "choch_orders", "stop_price", "REAL")
+            self._ensure_column(conn, "choch_orders", "tp_price", "REAL")
             self._ensure_column(conn, "choch_orders", "signed_units", "REAL")
             self._ensure_column(conn, "choch_orders", "intended_risk_cash", "REAL")
             self._ensure_column(conn, "choch_orders", "actual_risk_cash", "REAL")
             self._ensure_column(conn, "choch_orders", "actual_risk_pct", "REAL")
             self._ensure_column(conn, "choch_orders", "margin_required", "REAL")
+            self._ensure_column(conn, "choch_orders", "fill_transaction_id", "TEXT")
+            self._ensure_column(conn, "choch_orders", "cancel_transaction_id", "TEXT")
             self._ensure_column(conn, "choch_orders", "is_simulated", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "choch_trades", "setup_id", "INTEGER")
             self._ensure_column(conn, "choch_trades", "exit_time", "TEXT")
@@ -191,7 +209,20 @@ class ChochStateStore:
             self._ensure_column(conn, "choch_trades", "actual_risk_pct", "REAL")
             self._ensure_column(conn, "choch_trades", "margin_required", "REAL")
             self._ensure_column(conn, "choch_trades", "realized_r", "REAL")
+            self._ensure_column(conn, "choch_trades", "fill_transaction_id", "TEXT")
+            self._ensure_column(conn, "choch_trades", "close_transaction_id", "TEXT")
+            self._ensure_column(conn, "choch_trades", "realized_pl", "REAL")
+            self._ensure_column(conn, "choch_trades", "stop_loss_order_id", "TEXT")
+            self._ensure_column(conn, "choch_trades", "take_profit_order_id", "TEXT")
             self._ensure_column(conn, "choch_trades", "is_simulated", "INTEGER NOT NULL DEFAULT 0")
+
+    def _fetchone(self, sql: str, params: tuple[Any, ...]) -> sqlite3.Row | None:
+        with self.session() as conn:
+            return conn.execute(sql, params).fetchone()
+
+    def _fetchall(self, sql: str, params: tuple[Any, ...]) -> list[sqlite3.Row]:
+        with self.session() as conn:
+            return list(conn.execute(sql, params).fetchall())
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
         cols = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -230,6 +261,40 @@ class ChochStateStore:
                 VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(bot_id, account_id, instrument, granularity) DO UPDATE SET
                     last_complete_candle_time = excluded.last_complete_candle_time,
+                    updated_at = excluded.updated_at
+                """,
+                (bot_id, account_id, instrument, granularity, candle_time, utc_now_iso()),
+            )
+
+    def get_execution_watermark(self, *, bot_id: str, account_id: str, instrument: str, granularity: str) -> str | None:
+        with self.session() as conn:
+            row = conn.execute(
+                """
+                SELECT execution_watermark_time FROM choch_execution_watermarks
+                WHERE bot_id = ? AND account_id = ? AND instrument = ? AND granularity = ?
+                """,
+                (bot_id, account_id, instrument, granularity),
+            ).fetchone()
+            return None if row is None else str(row["execution_watermark_time"])
+
+    def set_execution_watermark(
+        self,
+        *,
+        bot_id: str,
+        account_id: str,
+        instrument: str,
+        granularity: str,
+        candle_time: str,
+    ) -> None:
+        with self.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO choch_execution_watermarks (
+                    bot_id, account_id, instrument, granularity, execution_watermark_time, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(bot_id, account_id, instrument, granularity) DO UPDATE SET
+                    execution_watermark_time = excluded.execution_watermark_time,
                     updated_at = excluded.updated_at
                 """,
                 (bot_id, account_id, instrument, granularity, candle_time, utc_now_iso()),
@@ -287,6 +352,15 @@ class ChochStateStore:
                 (bot_id, account_id, last_transaction_id, utc_now_iso(), status),
             )
 
+    def get_reconciliation(self, *, bot_id: str, account_id: str) -> sqlite3.Row | None:
+        return self._fetchone(
+            """
+            SELECT * FROM choch_reconciliation
+            WHERE bot_id = ? AND account_id = ?
+            """,
+            (bot_id, account_id),
+        )
+
     def local_pending_order_keys(self, *, bot_id: str, account_id: str) -> set[str]:
         with self.session() as conn:
             rows = conn.execute(
@@ -311,6 +385,454 @@ class ChochStateStore:
                 (bot_id, account_id),
             ).fetchall()
             return {str(row["oanda_trade_id"]) for row in rows}
+
+    def get_real_order_by_client_key(self, *, bot_id: str, account_id: str, client_order_key: str) -> sqlite3.Row | None:
+        with self.session() as conn:
+            return conn.execute(
+                """
+                SELECT * FROM choch_orders
+                WHERE bot_id = ? AND account_id = ? AND client_order_key = ? AND is_simulated = 0
+                """,
+                (bot_id, account_id, client_order_key),
+            ).fetchone()
+
+    def get_real_trade_by_client_key(self, *, bot_id: str, account_id: str, client_order_key: str) -> sqlite3.Row | None:
+        with self.session() as conn:
+            return conn.execute(
+                """
+                SELECT * FROM choch_trades
+                WHERE bot_id = ? AND account_id = ? AND client_order_key = ? AND is_simulated = 0
+                """,
+                (bot_id, account_id, client_order_key),
+            ).fetchone()
+
+    def get_real_order_by_oanda_order_id(self, *, bot_id: str, account_id: str, oanda_order_id: str) -> sqlite3.Row | None:
+        return self._fetchone(
+            """
+            SELECT * FROM choch_orders
+            WHERE bot_id = ? AND account_id = ? AND oanda_order_id = ? AND is_simulated = 0
+            """,
+            (bot_id, account_id, oanda_order_id),
+        )
+
+    def get_real_trade_by_oanda_trade_id(self, *, bot_id: str, account_id: str, oanda_trade_id: str) -> sqlite3.Row | None:
+        return self._fetchone(
+            """
+            SELECT * FROM choch_trades
+            WHERE bot_id = ? AND account_id = ? AND oanda_trade_id = ? AND is_simulated = 0
+            """,
+            (bot_id, account_id, oanda_trade_id),
+        )
+
+    def active_real_orders(self, *, bot_id: str, account_id: str) -> list[sqlite3.Row]:
+        return self._fetchall(
+            """
+            SELECT * FROM choch_orders
+            WHERE bot_id = ? AND account_id = ? AND is_simulated = 0
+              AND state IN ('local_pending', 'broker_pending')
+            """,
+            (bot_id, account_id),
+        )
+
+    def active_real_trades(self, *, bot_id: str, account_id: str) -> list[sqlite3.Row]:
+        return self._fetchall(
+            """
+            SELECT * FROM choch_trades
+            WHERE bot_id = ? AND account_id = ? AND is_simulated = 0
+              AND state IN ('filled', 'qualified', 'entered', 'open', 'local_open', 'broker_open')
+            """,
+            (bot_id, account_id),
+        )
+
+    def upsert_real_setup_intent(
+        self,
+        *,
+        bot_id: str,
+        account_id: str,
+        instrument: str,
+        strategy_leg: str,
+        client_order_key: str,
+        state: str,
+        direction: str,
+        signal_bar_time: str,
+        entry: float,
+        stop: float,
+        tp: float,
+        r_value: float | None,
+    ) -> None:
+        with self.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO choch_setups (
+                    bot_id, account_id, instrument, strategy_leg, state, direction,
+                    signal_bar_time, entry, stop, tp, r_value, client_order_key,
+                    is_simulated, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+                ON CONFLICT(bot_id, instrument, strategy_leg, client_order_key) DO UPDATE SET
+                    state = excluded.state,
+                    direction = excluded.direction,
+                    signal_bar_time = excluded.signal_bar_time,
+                    entry = excluded.entry,
+                    stop = excluded.stop,
+                    tp = excluded.tp,
+                    r_value = excluded.r_value,
+                    is_simulated = 0,
+                    updated_at = datetime('now')
+                """,
+                (
+                    bot_id,
+                    account_id,
+                    instrument,
+                    strategy_leg,
+                    state,
+                    direction,
+                    signal_bar_time,
+                    entry,
+                    stop,
+                    tp,
+                    r_value,
+                    client_order_key,
+                ),
+            )
+
+    def upsert_real_order(
+        self,
+        *,
+        bot_id: str,
+        account_id: str,
+        instrument: str,
+        strategy_leg: str,
+        client_order_key: str,
+        oanda_order_id: str | None,
+        state: str,
+        order_type: str,
+        price: float,
+        stop_price: float,
+        units: float,
+        signed_units: float,
+        intended_risk_cash: float,
+        actual_risk_cash: float,
+        actual_risk_pct: float,
+        margin_required: float,
+        tp_price: float | None = None,
+    ) -> None:
+        with self.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO choch_orders (
+                    bot_id, account_id, instrument, strategy_leg, client_order_key,
+                    oanda_order_id, state, order_type, price, stop_price, tp_price, units,
+                    signed_units, intended_risk_cash, actual_risk_cash, actual_risk_pct,
+                    margin_required, is_simulated, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+                ON CONFLICT(bot_id, instrument, strategy_leg, client_order_key) DO UPDATE SET
+                    oanda_order_id = COALESCE(excluded.oanda_order_id, choch_orders.oanda_order_id),
+                    state = excluded.state,
+                    order_type = excluded.order_type,
+                    price = excluded.price,
+                    stop_price = excluded.stop_price,
+                    tp_price = excluded.tp_price,
+                    units = excluded.units,
+                    signed_units = excluded.signed_units,
+                    intended_risk_cash = excluded.intended_risk_cash,
+                    actual_risk_cash = excluded.actual_risk_cash,
+                    actual_risk_pct = excluded.actual_risk_pct,
+                    margin_required = excluded.margin_required,
+                    is_simulated = 0,
+                    updated_at = datetime('now')
+                """,
+                (
+                    bot_id,
+                    account_id,
+                    instrument,
+                    strategy_leg,
+                    client_order_key,
+                    oanda_order_id,
+                    state,
+                    order_type,
+                    price,
+                    stop_price,
+                    tp_price,
+                    units,
+                    signed_units,
+                    intended_risk_cash,
+                    actual_risk_cash,
+                    actual_risk_pct,
+                    margin_required,
+                ),
+            )
+
+    def mark_real_order_cancelled(
+        self,
+        *,
+        bot_id: str,
+        account_id: str,
+        client_order_key: str,
+        cancel_transaction_id: str | None = None,
+    ) -> None:
+        with self.session() as conn:
+            conn.execute(
+                """
+                UPDATE choch_orders
+                SET state = 'cancelled',
+                    cancel_transaction_id = COALESCE(?, cancel_transaction_id),
+                    updated_at = datetime('now')
+                WHERE bot_id = ? AND account_id = ? AND client_order_key = ? AND is_simulated = 0
+                """,
+                (cancel_transaction_id, bot_id, account_id, client_order_key),
+            )
+
+    def mark_real_order_filled(
+        self,
+        *,
+        bot_id: str,
+        account_id: str,
+        client_order_key: str,
+        fill_transaction_id: str,
+    ) -> None:
+        with self.session() as conn:
+            conn.execute(
+                """
+                UPDATE choch_orders
+                SET state = 'filled',
+                    fill_transaction_id = COALESCE(?, fill_transaction_id),
+                    updated_at = datetime('now')
+                WHERE bot_id = ? AND account_id = ? AND client_order_key = ? AND is_simulated = 0
+                """,
+                (fill_transaction_id, bot_id, account_id, client_order_key),
+            )
+
+    def upsert_real_trade(
+        self,
+        *,
+        bot_id: str,
+        account_id: str,
+        instrument: str,
+        strategy_leg: str,
+        client_order_key: str,
+        oanda_trade_id: str | None,
+        state: str,
+        entry_time: str | None,
+        entry_price: float | None,
+        stop_price: float | None,
+        tp_price: float | None,
+        units: float | None,
+        signed_units: float | None,
+        intended_risk_cash: float | None,
+        actual_risk_cash: float | None,
+        actual_risk_pct: float | None,
+        margin_required: float | None,
+        fill_transaction_id: str | None = None,
+    ) -> None:
+        with self.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO choch_trades (
+                    bot_id, account_id, instrument, strategy_leg, client_order_key,
+                    oanda_trade_id, state, entry_time, entry_price, stop_price, tp_price,
+                    units, signed_units, intended_risk_cash, actual_risk_cash,
+                    actual_risk_pct, margin_required, fill_transaction_id,
+                    is_simulated, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+                ON CONFLICT(bot_id, instrument, strategy_leg, client_order_key) DO UPDATE SET
+                    oanda_trade_id = COALESCE(excluded.oanda_trade_id, choch_trades.oanda_trade_id),
+                    state = excluded.state,
+                    entry_time = COALESCE(excluded.entry_time, choch_trades.entry_time),
+                    entry_price = COALESCE(excluded.entry_price, choch_trades.entry_price),
+                    stop_price = COALESCE(excluded.stop_price, choch_trades.stop_price),
+                    tp_price = COALESCE(excluded.tp_price, choch_trades.tp_price),
+                    units = COALESCE(excluded.units, choch_trades.units),
+                    signed_units = COALESCE(excluded.signed_units, choch_trades.signed_units),
+                    intended_risk_cash = COALESCE(excluded.intended_risk_cash, choch_trades.intended_risk_cash),
+                    actual_risk_cash = COALESCE(excluded.actual_risk_cash, choch_trades.actual_risk_cash),
+                    actual_risk_pct = COALESCE(excluded.actual_risk_pct, choch_trades.actual_risk_pct),
+                    margin_required = COALESCE(excluded.margin_required, choch_trades.margin_required),
+                    fill_transaction_id = COALESCE(excluded.fill_transaction_id, choch_trades.fill_transaction_id),
+                    is_simulated = 0,
+                    updated_at = datetime('now')
+                """,
+                (
+                    bot_id,
+                    account_id,
+                    instrument,
+                    strategy_leg,
+                    client_order_key,
+                    oanda_trade_id,
+                    state,
+                    entry_time,
+                    entry_price,
+                    stop_price,
+                    tp_price,
+                    units,
+                    signed_units,
+                    intended_risk_cash,
+                    actual_risk_cash,
+                    actual_risk_pct,
+                    margin_required,
+                    fill_transaction_id,
+                ),
+            )
+
+    def close_real_trade(
+        self,
+        *,
+        bot_id: str,
+        account_id: str,
+        client_order_key: str,
+        state: str,
+        exit_time: str | None,
+        close_transaction_id: str,
+        realized_pl: float | None,
+        realized_r: float | None,
+    ) -> None:
+        with self.session() as conn:
+            conn.execute(
+                """
+                UPDATE choch_trades
+                SET state = ?,
+                    exit_time = COALESCE(?, exit_time),
+                    close_transaction_id = COALESCE(?, close_transaction_id),
+                    realized_pl = COALESCE(?, realized_pl),
+                    realized_r = COALESCE(?, realized_r),
+                    updated_at = datetime('now')
+                WHERE bot_id = ? AND account_id = ? AND client_order_key = ? AND is_simulated = 0
+                """,
+                (
+                    state,
+                    exit_time,
+                    close_transaction_id,
+                    realized_pl,
+                    realized_r,
+                    bot_id,
+                    account_id,
+                    client_order_key,
+                ),
+            )
+
+    def update_real_trade_protection(
+        self,
+        *,
+        bot_id: str,
+        account_id: str,
+        client_order_key: str,
+        stop_loss_order_id: str | None = None,
+        take_profit_order_id: str | None = None,
+    ) -> None:
+        with self.session() as conn:
+            conn.execute(
+                """
+                UPDATE choch_trades
+                SET stop_loss_order_id = COALESCE(?, stop_loss_order_id),
+                    take_profit_order_id = COALESCE(?, take_profit_order_id),
+                    updated_at = datetime('now')
+                WHERE bot_id = ? AND account_id = ? AND client_order_key = ? AND is_simulated = 0
+                """,
+                (stop_loss_order_id, take_profit_order_id, bot_id, account_id, client_order_key),
+            )
+
+    def upsert_real_s2_observation(
+        self,
+        *,
+        bot_id: str,
+        account_id: str,
+        instrument: str,
+        client_order_key: str,
+        parent_s1_trade_id: str,
+        direction: str,
+        s1_tp_time: str,
+        observation_start_time: str,
+        expected_decision_time: str,
+        entry: float,
+        stop: float,
+        tp: float,
+        r_value: float,
+        state: str = "observing",
+    ) -> None:
+        with self.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO choch_setups (
+                    bot_id, account_id, instrument, strategy_leg, state, direction,
+                    signal_bar_time, entry, stop, tp, r_value, parent_s1_trade_id,
+                    s1_tp_time, observation_start_time, expected_decision_time,
+                    client_order_key, is_simulated, updated_at
+                )
+                VALUES (?, ?, ?, 'S2', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+                ON CONFLICT(bot_id, instrument, strategy_leg, client_order_key) DO UPDATE SET
+                    state = excluded.state,
+                    direction = excluded.direction,
+                    entry = excluded.entry,
+                    stop = excluded.stop,
+                    tp = excluded.tp,
+                    r_value = excluded.r_value,
+                    parent_s1_trade_id = excluded.parent_s1_trade_id,
+                    s1_tp_time = excluded.s1_tp_time,
+                    observation_start_time = excluded.observation_start_time,
+                    expected_decision_time = excluded.expected_decision_time,
+                    is_simulated = 0,
+                    updated_at = datetime('now')
+                """,
+                (
+                    bot_id,
+                    account_id,
+                    instrument,
+                    state,
+                    direction,
+                    expected_decision_time,
+                    entry,
+                    stop,
+                    tp,
+                    r_value,
+                    parent_s1_trade_id,
+                    s1_tp_time,
+                    observation_start_time,
+                    expected_decision_time,
+                    client_order_key,
+                ),
+            )
+
+    def update_real_setup_state(
+        self,
+        *,
+        bot_id: str,
+        account_id: str,
+        client_order_key: str,
+        strategy_leg: str,
+        state: str,
+        cancellation_reason: str | None = None,
+    ) -> None:
+        with self.session() as conn:
+            conn.execute(
+                """
+                UPDATE choch_setups
+                SET state = ?,
+                    cancellation_reason = COALESCE(?, cancellation_reason),
+                    updated_at = datetime('now')
+                WHERE bot_id = ? AND account_id = ? AND strategy_leg = ? AND client_order_key = ?
+                  AND is_simulated = 0
+                """,
+                (state, cancellation_reason, bot_id, account_id, strategy_leg, client_order_key),
+            )
+
+    def observing_real_s2_setups(self, *, bot_id: str, account_id: str, instrument: str | None = None) -> list[sqlite3.Row]:
+        params: tuple[Any, ...]
+        instrument_clause = ""
+        if instrument is None:
+            params = (bot_id, account_id)
+        else:
+            instrument_clause = "AND instrument = ?"
+            params = (bot_id, account_id, instrument)
+        return self._fetchall(
+            f"""
+            SELECT * FROM choch_setups
+            WHERE bot_id = ? AND account_id = ? {instrument_clause}
+              AND strategy_leg = 'S2' AND state = 'observing' AND is_simulated = 0
+            """,
+            params,
+        )
 
     def aggregate_open_risk_cash(self, *, bot_id: str, account_id: str, is_simulated: bool) -> float:
         simulated = 1 if is_simulated else 0
