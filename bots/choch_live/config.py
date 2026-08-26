@@ -58,11 +58,16 @@ def _parse_instruments(raw: Any) -> tuple[InstrumentConfig, ...]:
         parsed: list[InstrumentConfig] = []
         for key, value in raw.items():
             alias = _require_non_placeholder(str(key), "instrument key")
+            max_units = None
             if isinstance(value, dict):
                 name = _require_non_placeholder(str(value.get("name", "")), f"instrument {alias}.name")
+                if value.get("max_units") is not None:
+                    max_units = int(value["max_units"])
+                    if max_units <= 0:
+                        raise RuntimeError(f"CHoCH config invalid: instrument {alias}.max_units must be positive")
             else:
                 name = _require_non_placeholder(str(value), f"instrument {alias}")
-            parsed.append(InstrumentConfig(key=alias, name=name))
+            parsed.append(InstrumentConfig(key=alias, name=name, max_units=max_units))
         return tuple(parsed)
 
     if isinstance(raw, list) and raw:
@@ -127,6 +132,11 @@ def load_choch_config(cfg: dict[str, Any]) -> ChochConfig:
         raise RuntimeError("CHoCH config invalid: max_account_risk_open must be > 0 and <= 0.20")
     if max_units <= 0:
         raise RuntimeError("CHoCH config invalid: max_units must be positive")
+    for instrument in instruments:
+        if instrument.max_units is None:
+            continue
+        if instrument.max_units <= 0:
+            raise RuntimeError(f"CHoCH config invalid: instrument {instrument.key}.max_units must be positive")
 
     return ChochConfig(
         bot_id=bot_id,

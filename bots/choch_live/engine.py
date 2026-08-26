@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from typing import Any
 
 import pandas as pd
@@ -9,9 +10,9 @@ from bots.choch_live.broker import ChochBroker
 from bots.choch_live.config import ChochConfig
 from bots.choch_live.logging import get_choch_logger
 from bots.choch_live.models import EventType
-from bots.choch_live.risk import quote_currency, size_shadow_position
+from bots.choch_live.risk import assess_aggregate_risk_admission, quote_currency, size_shadow_position
 from bots.choch_live.s1_structure import S1Result, simulate_s1
-from bots.choch_live.s2_continuation import simulate_s2_from_s1
+from bots.choch_live.s2_continuation import S2Result, simulate_s2_from_s1
 from bots.choch_live.state import ChochStateStore
 from shared.strategy_utils import bid_ask_candles_to_df
 from shared.time_utils import seconds_until_next_close
@@ -153,12 +154,7 @@ class ChochEngine:
                 continue
             s2_result = simulate_s2_from_s1(s2_df, parent_s1_key=result.client_order_key, s1=result)
             if s2_result is not None:
-                self.state.upsert_simulated_s2_result(
-                    bot_id=self.config.bot_id,
-                    account_id=self.config.account_id,
-                    instrument=instrument,
-                    result=s2_result,
-                )
+                self._persist_shadow_s2(instrument=instrument, result=s2_result)
                 s2_count += 1
         self.state.record_event(
             bot_id=self.config.bot_id,
@@ -224,38 +220,126 @@ class ChochEngine:
             result=result,
         )
 
-    def _estimate_shadow_sizing(self, *, instrument: str, result: S1Result) -> dict[str, float] | None:
+    def _persist_shadow_s2(self, *, instrument: str, result: S2Result) -> None:
+        payload = dict(result.payload)
+        if result.entry is not None and result.stop is not None:
+            sizing = self._estimate_shadow_sizing(
+                instrument=instrument,
+                result=result,
+                direction=result.s2_direction,
+                strategy_leg="S2",
+            )
+            if sizing is not None:
+                payload["shadow_position_size"] = sizing
+                self.state.record_event(
+                    bot_id=self.config.bot_id,
+                    account_id=self.config.account_id,
+                    instrument=instrument,
+                    strategy_leg="S2",
+                    event_type="CHOCH_SHADOW_POSITION_SIZE",
+                    payload={"client_order_key": f"{result.parent_s1_key}-S2", **sizing},
+                )
+                result = replace(result, payload=payload)
+        self.state.upsert_simulated_s2_result(
+            bot_id=self.config.bot_id,
+            account_id=self.config.account_id,
+            instrument=instrument,
+            result=result,
+        )
+
+    def _estimate_shadow_sizing(
+        self,
+        *,
+        instrument: str,
+        result: S1Result | S2Result,
+        direction: str | None = None,
+        strategy_leg: str = "S1",
+    ) -> dict[str, float] | None:
         metadata = self.broker.instrument_metadata.get(instrument)
         if metadata is None or result.entry is None or result.stop is None:
             return None
         try:
-            nav = self.broker.get_account_nav()
+            account_state = self.broker.get_account_risk_state()
+            nav = float(account_state["nav"])
+            margin_available = float(account_state["margin_available"])
             conversion = self.broker.get_quote_to_account_rate(quote_currency(instrument))
+            instrument_cfg = next((x for x in self.config.instruments if x.name == instrument), None)
+            max_units = instrument_cfg.max_units if instrument_cfg and instrument_cfg.max_units else self.config.max_units
             size = size_shadow_position(
                 account_nav=nav,
                 risk_pct=self.config.risk_pct,
                 entry=result.entry,
                 stop=result.stop,
-                direction=result.direction,
+                direction=direction or result.direction,
                 metadata=metadata,
                 quote_to_account_rate=conversion,
-                max_units=self.config.max_units,
+                max_units=max_units,
+            )
+            margin_ok = size.margin_required <= margin_available + 1e-9
+            existing_risk = self.state.aggregate_open_risk_cash(
+                bot_id=self.config.bot_id,
+                account_id=self.config.account_id,
+                is_simulated=True,
+            )
+            admission = assess_aggregate_risk_admission(
+                nav=nav,
+                max_account_risk_open=self.config.max_account_risk_open,
+                existing_risk_cash=existing_risk,
+                candidate_intended_risk_cash=size.intended_risk_cash,
+                candidate_actual_risk_cash=size.actual_risk_cash,
+            )
+            admitted = admission.admitted and margin_ok
+            rejection_reason = admission.rejection_reason
+            if not margin_ok:
+                rejection_reason = "margin_insufficient"
+            self.log.info(
+                "CHOCH_RISK_ADMISSION | instrument=%s | strategy_leg=%s | nav=%s | aggregate_cap_pct=%s "
+                "| aggregate_cap_cash=%s | existing_choch_risk_cash=%s | candidate_intended_risk_cash=%s "
+                "| candidate_actual_risk_cash=%s | resulting_aggregate_risk_cash=%s | margin_required=%s "
+                "| margin_available=%s | margin_ok=%s | admitted=%s | rejection_reason=%s",
+                instrument,
+                strategy_leg,
+                nav,
+                self.config.max_account_risk_open,
+                admission.aggregate_cap_cash,
+                admission.existing_risk_cash,
+                size.intended_risk_cash,
+                size.actual_risk_cash,
+                admission.resulting_aggregate_risk_cash,
+                size.margin_required,
+                margin_available,
+                margin_ok,
+                admitted,
+                rejection_reason,
             )
             return {
+                "nav": nav,
                 "risk_cash": size.risk_cash,
+                "intended_risk_cash": size.intended_risk_cash,
+                "actual_risk_cash": size.actual_risk_cash,
+                "actual_risk_pct": size.actual_risk_pct,
                 "risk_per_unit": size.risk_per_unit,
                 "units": size.units,
                 "signed_units": size.signed_units,
                 "margin_required": size.margin_required,
+                "margin_available": margin_available,
+                "margin_ok": margin_ok,
                 "margin_rate": metadata.margin_rate,
                 "effective_leverage": metadata.effective_leverage,
                 "quote_to_account_rate": conversion,
+                "max_units": float(max_units),
+                "aggregate_cap_pct": self.config.max_account_risk_open,
+                "aggregate_cap_cash": admission.aggregate_cap_cash,
+                "existing_choch_risk_cash": admission.existing_risk_cash,
+                "resulting_aggregate_risk_cash": admission.resulting_aggregate_risk_cash,
+                "admitted": admitted,
+                "rejection_reason": rejection_reason,
             }
         except Exception as exc:
             self.log.warning(
                 "CHOCH_SHADOW_SIZING_SKIPPED | instrument=%s | client_order_key=%s | err=%s",
                 instrument,
-                result.client_order_key,
+                result.client_order_key if strategy_leg == "S1" else f"{result.parent_s1_key}-S2",
                 exc,
             )
             return None

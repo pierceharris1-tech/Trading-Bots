@@ -70,6 +70,7 @@ class AccountMetadata:
 class InstrumentConfig:
     key: str
     name: str
+    max_units: int | None = None
 
 
 @dataclass(frozen=True)

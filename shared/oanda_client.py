@@ -209,6 +209,21 @@ class OandaClient:
             )
         return float(nav)
 
+    def get_account_risk_state(self) -> dict[str, float]:
+        """
+        Fetch live account NAV and margin availability from one OANDA summary.
+        NAV is the risk base; marginAvailable is only an admission constraint.
+        """
+        data = self.get_account_summary()
+        account = data.get("account", {})
+        nav = account.get("NAV") or account.get("balance")
+        if nav is None:
+            raise RuntimeError(f"Could not read NAV from account summary: {account}")
+        margin_available = account.get("marginAvailable")
+        if margin_available is None:
+            raise RuntimeError(f"Could not read marginAvailable from account summary: {account}")
+        return {"nav": float(nav), "margin_available": float(margin_available)}
+
     def get_candles(
         self,
         instrument: str,

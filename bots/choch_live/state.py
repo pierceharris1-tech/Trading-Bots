@@ -85,7 +85,13 @@ class ChochStateStore:
                     state TEXT NOT NULL,
                     order_type TEXT,
                     price REAL,
+                    stop_price REAL,
                     units INTEGER,
+                    signed_units REAL,
+                    intended_risk_cash REAL,
+                    actual_risk_cash REAL,
+                    actual_risk_pct REAL,
+                    margin_required REAL,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                     is_simulated INTEGER NOT NULL DEFAULT 0,
@@ -111,6 +117,12 @@ class ChochStateStore:
                     entry_price REAL,
                     stop_price REAL,
                     tp_price REAL,
+                    units REAL,
+                    signed_units REAL,
+                    intended_risk_cash REAL,
+                    actual_risk_cash REAL,
+                    actual_risk_pct REAL,
+                    margin_required REAL,
                     realized_r REAL,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -157,7 +169,19 @@ class ChochStateStore:
                 """
             )
             self._ensure_column(conn, "choch_setups", "is_simulated", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "choch_orders", "stop_price", "REAL")
+            self._ensure_column(conn, "choch_orders", "signed_units", "REAL")
+            self._ensure_column(conn, "choch_orders", "intended_risk_cash", "REAL")
+            self._ensure_column(conn, "choch_orders", "actual_risk_cash", "REAL")
+            self._ensure_column(conn, "choch_orders", "actual_risk_pct", "REAL")
+            self._ensure_column(conn, "choch_orders", "margin_required", "REAL")
             self._ensure_column(conn, "choch_orders", "is_simulated", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "choch_trades", "units", "REAL")
+            self._ensure_column(conn, "choch_trades", "signed_units", "REAL")
+            self._ensure_column(conn, "choch_trades", "intended_risk_cash", "REAL")
+            self._ensure_column(conn, "choch_trades", "actual_risk_cash", "REAL")
+            self._ensure_column(conn, "choch_trades", "actual_risk_pct", "REAL")
+            self._ensure_column(conn, "choch_trades", "margin_required", "REAL")
             self._ensure_column(conn, "choch_trades", "is_simulated", "INTEGER NOT NULL DEFAULT 0")
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
@@ -279,6 +303,42 @@ class ChochStateStore:
             ).fetchall()
             return {str(row["oanda_trade_id"]) for row in rows}
 
+    def aggregate_open_risk_cash(self, *, bot_id: str, account_id: str, is_simulated: bool) -> float:
+        simulated = 1 if is_simulated else 0
+        active_order_states = ("local_pending", "broker_pending")
+        active_trade_states = ("filled", "qualified", "entered", "open", "local_open", "broker_open")
+        with self.session() as conn:
+            order_rows = conn.execute(
+                f"""
+                SELECT client_order_key, actual_risk_cash FROM choch_orders
+                WHERE bot_id = ? AND account_id = ? AND is_simulated = ?
+                  AND state IN ({",".join("?" for _ in active_order_states)})
+                """,
+                (bot_id, account_id, simulated, *active_order_states),
+            ).fetchall()
+            trade_rows = conn.execute(
+                f"""
+                SELECT client_order_key, actual_risk_cash FROM choch_trades
+                WHERE bot_id = ? AND account_id = ? AND is_simulated = ?
+                  AND state IN ({",".join("?" for _ in active_trade_states)})
+                """,
+                (bot_id, account_id, simulated, *active_trade_states),
+            ).fetchall()
+
+        total = 0.0
+        for row in [*order_rows, *trade_rows]:
+            if row["actual_risk_cash"] is None:
+                mode = "simulated" if is_simulated else "real"
+                raise RuntimeError(
+                    f"Cannot calculate {mode} CHoCH aggregate risk: active row "
+                    f"{row['client_order_key']} has no actual_risk_cash"
+                )
+            risk = float(row["actual_risk_cash"])
+            if risk < 0:
+                raise RuntimeError(f"Active CHoCH risk row {row['client_order_key']} has negative risk")
+            total += risk
+        return total
+
     def upsert_simulated_s1_result(
         self,
         *,
@@ -322,15 +382,18 @@ class ChochStateStore:
                     result.cancellation_reason,
                 ),
             )
-            if result.entry is not None:
+            sizing = dict(result.payload.get("shadow_position_size") or {})
+            admitted = sizing.get("admitted", True)
+            if result.entry is not None and admitted:
                 conn.execute(
                     """
                     INSERT INTO choch_trades (
                         bot_id, account_id, instrument, strategy_leg, client_order_key,
                         state, entry_time, exit_time, entry_price, stop_price, tp_price,
-                        realized_r, is_simulated, updated_at
+                        units, signed_units, intended_risk_cash, actual_risk_cash,
+                        actual_risk_pct, margin_required, realized_r, is_simulated, updated_at
                     )
-                    VALUES (?, ?, ?, 'S1', ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'))
+                    VALUES (?, ?, ?, 'S1', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'))
                     ON CONFLICT(bot_id, instrument, strategy_leg, client_order_key) DO UPDATE SET
                         state = excluded.state,
                         entry_time = excluded.entry_time,
@@ -338,6 +401,12 @@ class ChochStateStore:
                         entry_price = excluded.entry_price,
                         stop_price = excluded.stop_price,
                         tp_price = excluded.tp_price,
+                        units = excluded.units,
+                        signed_units = excluded.signed_units,
+                        intended_risk_cash = excluded.intended_risk_cash,
+                        actual_risk_cash = excluded.actual_risk_cash,
+                        actual_risk_pct = excluded.actual_risk_pct,
+                        margin_required = excluded.margin_required,
                         realized_r = excluded.realized_r,
                         is_simulated = 1,
                         updated_at = datetime('now')
@@ -353,6 +422,12 @@ class ChochStateStore:
                         result.entry,
                         result.stop,
                         result.target,
+                        sizing.get("units"),
+                        sizing.get("signed_units"),
+                        sizing.get("intended_risk_cash"),
+                        sizing.get("actual_risk_cash"),
+                        sizing.get("actual_risk_pct"),
+                        sizing.get("margin_required"),
                         result.net_r,
                     ),
                 )
@@ -403,15 +478,18 @@ class ChochStateStore:
                     key,
                 ),
             )
-            if result.entry is not None:
+            sizing = dict(result.payload.get("shadow_position_size") or {})
+            admitted = sizing.get("admitted", True)
+            if result.entry is not None and admitted:
                 conn.execute(
                     """
                     INSERT INTO choch_trades (
                         bot_id, account_id, instrument, strategy_leg, client_order_key,
                         state, entry_time, exit_time, entry_price, stop_price, tp_price,
-                        realized_r, is_simulated, updated_at
+                        units, signed_units, intended_risk_cash, actual_risk_cash,
+                        actual_risk_pct, margin_required, realized_r, is_simulated, updated_at
                     )
-                    VALUES (?, ?, ?, 'S2', ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'))
+                    VALUES (?, ?, ?, 'S2', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'))
                     ON CONFLICT(bot_id, instrument, strategy_leg, client_order_key) DO UPDATE SET
                         state = excluded.state,
                         entry_time = excluded.entry_time,
@@ -419,6 +497,12 @@ class ChochStateStore:
                         entry_price = excluded.entry_price,
                         stop_price = excluded.stop_price,
                         tp_price = excluded.tp_price,
+                        units = excluded.units,
+                        signed_units = excluded.signed_units,
+                        intended_risk_cash = excluded.intended_risk_cash,
+                        actual_risk_cash = excluded.actual_risk_cash,
+                        actual_risk_pct = excluded.actual_risk_pct,
+                        margin_required = excluded.margin_required,
                         realized_r = excluded.realized_r,
                         is_simulated = 1,
                         updated_at = datetime('now')
@@ -434,6 +518,12 @@ class ChochStateStore:
                         result.entry,
                         result.stop,
                         result.target,
+                        sizing.get("units"),
+                        sizing.get("signed_units"),
+                        sizing.get("intended_risk_cash"),
+                        sizing.get("actual_risk_cash"),
+                        sizing.get("actual_risk_pct"),
+                        sizing.get("margin_required"),
                         result.r,
                     ),
                 )

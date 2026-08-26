@@ -130,6 +130,9 @@ class ChochBroker:
     def get_account_nav(self) -> float:
         return self.client.get_account_nav()
 
+    def get_account_risk_state(self) -> dict[str, float]:
+        return self.client.get_account_risk_state()
+
     def get_quote_to_account_rate(self, quote_currency: str) -> float:
         if not self.account_metadata or not self.account_metadata.currency:
             raise RuntimeError("Account metadata must be loaded before conversion lookup")

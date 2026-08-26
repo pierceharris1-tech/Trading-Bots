@@ -64,6 +64,77 @@ class TestChochRisk(unittest.TestCase):
         self.assertAlmostEqual(size.margin_required, 2_000.0)
         self.assertAlmostEqual(metadata.effective_leverage, 20.0)
 
+    def test_shadow_position_risk_cash_tracks_current_nav_and_units_change(self):
+        metadata = InstrumentMetadata(
+            key="eur_usd",
+            name="EUR_USD",
+            margin_rate=0.03333333333333,
+            minimum_trade_size=1.0,
+            trade_units_precision=0,
+            pip_location=-4,
+            display_precision=5,
+            instrument_type="CURRENCY",
+        )
+
+        cases = [
+            (100_000.0, 2_000.0, 250_000),
+            (95_000.0, 1_900.0, 237_500),
+            (110_000.0, 2_200.0, 275_000),
+        ]
+
+        for nav, expected_risk_cash, expected_units in cases:
+            with self.subTest(nav=nav):
+                size = size_shadow_position(
+                    account_nav=nav,
+                    risk_pct=0.02,
+                    entry=1.1000,
+                    stop=1.0900,
+                    direction="bullish",
+                    metadata=metadata,
+                    quote_to_account_rate=0.80,
+                    max_units=1_000_000,
+                )
+                self.assertAlmostEqual(size.risk_cash, expected_risk_cash)
+                self.assertEqual(size.units, expected_units)
+                self.assertEqual(size.signed_units, expected_units)
+
+    def test_global_max_units_caps_eurusd_below_two_percent_risk(self):
+        metadata = InstrumentMetadata(
+            key="eur_usd",
+            name="EUR_USD",
+            margin_rate=0.03333333333333,
+            minimum_trade_size=1.0,
+            trade_units_precision=0,
+            pip_location=-4,
+            display_precision=5,
+            instrument_type="CURRENCY",
+        )
+
+        uncapped = size_shadow_position(
+            account_nav=100_000.0,
+            risk_pct=0.02,
+            entry=1.1000,
+            stop=1.0900,
+            direction="bullish",
+            metadata=metadata,
+            quote_to_account_rate=0.80,
+            max_units=1_000_000,
+        )
+        capped = size_shadow_position(
+            account_nav=100_000.0,
+            risk_pct=0.02,
+            entry=1.1000,
+            stop=1.0900,
+            direction="bullish",
+            metadata=metadata,
+            quote_to_account_rate=0.80,
+            max_units=1000,
+        )
+
+        self.assertEqual(uncapped.units, 250_000)
+        self.assertEqual(capped.units, 1000)
+        self.assertLess(capped.units, uncapped.units)
+
 
 if __name__ == "__main__":
     unittest.main()

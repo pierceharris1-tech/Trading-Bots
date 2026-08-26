@@ -287,10 +287,11 @@ CHOCH_OANDA_PRACTICE_v1:
   instruments:
     eur_usd:
       name: EUR_USD
+      max_units: 10000000
     nasdaq_100:
       name: REPLACE_NAS100_INSTRUMENT
+      max_units: 100
   s1_timeframe: H1
   s2_timeframe: M10
   risk_pct: 0.02
   max_account_risk_open: 0.04
-  max_units: 1000
