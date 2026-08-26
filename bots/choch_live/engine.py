@@ -86,10 +86,20 @@ class ChochEngine:
     def process_once(self) -> None:
         self.reconcile_read_only()
         for instrument in self.config.instrument_names:
-            s2_df = self._process_timeframe(instrument=instrument, granularity=self.config.s2_timeframe, count=1200)
-            s1_df = self._process_timeframe(instrument=instrument, granularity=self.config.s1_timeframe, count=500)
-            if s1_df is not None:
-                self._process_shadow_strategy(instrument=instrument, s1_df=s1_df, s2_df=s2_df)
+            try:
+                s2_df = self._process_timeframe(instrument=instrument, granularity=self.config.s2_timeframe, count=1200)
+                s1_df = self._process_timeframe(instrument=instrument, granularity=self.config.s1_timeframe, count=500)
+                if s1_df is not None:
+                    self._process_shadow_strategy(instrument=instrument, s1_df=s1_df, s2_df=s2_df)
+            except Exception as exc:
+                self.log.exception("CHOCH_INSTRUMENT_ERROR | instrument=%s | err=%s", instrument, exc)
+                self.state.record_event(
+                    bot_id=self.config.bot_id,
+                    account_id=self.config.account_id,
+                    instrument=instrument,
+                    event_type=EventType.CHOCH_INSTRUMENT_ERROR.value,
+                    payload={"error": str(exc)},
+                )
 
     def _process_timeframe(self, *, instrument: str, granularity: str, count: int) -> pd.DataFrame | None:
         latest, _candle, payload = self.broker.get_complete_candles(

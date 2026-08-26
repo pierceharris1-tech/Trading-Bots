@@ -168,6 +168,10 @@ class ChochStateStore:
                 );
                 """
             )
+            self._ensure_column(conn, "choch_setups", "r_value", "REAL")
+            self._ensure_column(conn, "choch_setups", "parent_s1_trade_id", "TEXT")
+            self._ensure_column(conn, "choch_setups", "s1_tp_time", "TEXT")
+            self._ensure_column(conn, "choch_setups", "cancellation_reason", "TEXT")
             self._ensure_column(conn, "choch_setups", "is_simulated", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "choch_orders", "stop_price", "REAL")
             self._ensure_column(conn, "choch_orders", "signed_units", "REAL")
@@ -176,12 +180,17 @@ class ChochStateStore:
             self._ensure_column(conn, "choch_orders", "actual_risk_pct", "REAL")
             self._ensure_column(conn, "choch_orders", "margin_required", "REAL")
             self._ensure_column(conn, "choch_orders", "is_simulated", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "choch_trades", "setup_id", "INTEGER")
+            self._ensure_column(conn, "choch_trades", "exit_time", "TEXT")
+            self._ensure_column(conn, "choch_trades", "stop_price", "REAL")
+            self._ensure_column(conn, "choch_trades", "tp_price", "REAL")
             self._ensure_column(conn, "choch_trades", "units", "REAL")
             self._ensure_column(conn, "choch_trades", "signed_units", "REAL")
             self._ensure_column(conn, "choch_trades", "intended_risk_cash", "REAL")
             self._ensure_column(conn, "choch_trades", "actual_risk_cash", "REAL")
             self._ensure_column(conn, "choch_trades", "actual_risk_pct", "REAL")
             self._ensure_column(conn, "choch_trades", "margin_required", "REAL")
+            self._ensure_column(conn, "choch_trades", "realized_r", "REAL")
             self._ensure_column(conn, "choch_trades", "is_simulated", "INTEGER NOT NULL DEFAULT 0")
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
@@ -393,7 +402,7 @@ class ChochStateStore:
                         units, signed_units, intended_risk_cash, actual_risk_cash,
                         actual_risk_pct, margin_required, realized_r, is_simulated, updated_at
                     )
-                    VALUES (?, ?, ?, 'S1', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'))
+                    VALUES (?, ?, ?, 'S1', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'))
                     ON CONFLICT(bot_id, instrument, strategy_leg, client_order_key) DO UPDATE SET
                         state = excluded.state,
                         entry_time = excluded.entry_time,
@@ -489,7 +498,7 @@ class ChochStateStore:
                         units, signed_units, intended_risk_cash, actual_risk_cash,
                         actual_risk_pct, margin_required, realized_r, is_simulated, updated_at
                     )
-                    VALUES (?, ?, ?, 'S2', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'))
+                    VALUES (?, ?, ?, 'S2', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'))
                     ON CONFLICT(bot_id, instrument, strategy_leg, client_order_key) DO UPDATE SET
                         state = excluded.state,
                         entry_time = excluded.entry_time,

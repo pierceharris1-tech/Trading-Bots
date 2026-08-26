@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import tempfile
 import unittest
 from pathlib import Path
@@ -175,7 +176,7 @@ class TestChochRiskControls(unittest.TestCase):
                         """,
                         (key,),
                     )
-            self.assertEqual(
+            self.assertAlmostEqual(
                 store.aggregate_open_risk_cash(
                     bot_id="CHOCH_TEST",
                     account_id="101-004-00000000-999",
@@ -237,7 +238,7 @@ class TestChochRiskControls(unittest.TestCase):
                             'real-open', 'broker_open', 500, 0)
                     """
                 )
-            self.assertEqual(
+            self.assertAlmostEqual(
                 store.aggregate_open_risk_cash(
                     bot_id="CHOCH_TEST",
                     account_id="101-004-00000000-999",
@@ -245,7 +246,7 @@ class TestChochRiskControls(unittest.TestCase):
                 ),
                 2_000.0,
             )
-            self.assertEqual(
+            self.assertAlmostEqual(
                 store.aggregate_open_risk_cash(
                     bot_id="CHOCH_TEST",
                     account_id="101-004-00000000-999",
@@ -338,6 +339,99 @@ class TestChochRiskControls(unittest.TestCase):
         self.assertFalse(sizing["admitted"])
         self.assertEqual(sizing["rejection_reason"], "margin_insufficient")
         self.assertEqual(sizing["units"], 250_000)
+
+    def test_persisted_simulated_risk_feeds_next_aggregate_admission(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ChochStateStore(Path(tmp) / "state.db")
+            store.ensure_schema()
+            engine = ChochEngine(config=config(), broker=FakeBroker(), state=store)
+
+            first = s1_candidate()
+            first_sizing = engine._estimate_shadow_sizing(instrument="EUR_USD", result=first)
+            self.assertIsNotNone(first_sizing)
+            self.assertTrue(first_sizing["admitted"])
+            store.upsert_simulated_s1_result(
+                bot_id="CHOCH_TEST",
+                account_id="101-004-00000000-999",
+                instrument="EUR_USD",
+                result=replace(first, payload={"shadow_position_size": first_sizing}),
+            )
+
+            second = replace(s1_candidate(), client_order_key="s1-candidate-2")
+            second_sizing = engine._estimate_shadow_sizing(instrument="EUR_USD", result=second)
+            self.assertIsNotNone(second_sizing)
+            self.assertAlmostEqual(second_sizing["existing_choch_risk_cash"], 2_000.0)
+            self.assertAlmostEqual(second_sizing["resulting_aggregate_risk_cash"], 4_000.0)
+            self.assertTrue(second_sizing["admitted"])
+            store.upsert_simulated_s1_result(
+                bot_id="CHOCH_TEST",
+                account_id="101-004-00000000-999",
+                instrument="EUR_USD",
+                result=replace(second, payload={"shadow_position_size": second_sizing}),
+            )
+
+            self.assertAlmostEqual(
+                store.aggregate_open_risk_cash(
+                    bot_id="CHOCH_TEST",
+                    account_id="101-004-00000000-999",
+                    is_simulated=True,
+                ),
+                4_000.0,
+            )
+
+            third = replace(s1_candidate(), client_order_key="s1-candidate-3")
+            third_sizing = engine._estimate_shadow_sizing(instrument="EUR_USD", result=third)
+            self.assertIsNotNone(third_sizing)
+            self.assertAlmostEqual(third_sizing["existing_choch_risk_cash"], 4_000.0)
+            self.assertFalse(third_sizing["admitted"])
+            self.assertEqual(third_sizing["rejection_reason"], "aggregate_risk_cap_exceeded")
+
+            completed_first = replace(first, outcome="tp", net_r=1.5, payload={"shadow_position_size": first_sizing})
+            store.upsert_simulated_s1_result(
+                bot_id="CHOCH_TEST",
+                account_id="101-004-00000000-999",
+                instrument="EUR_USD",
+                result=completed_first,
+            )
+            self.assertAlmostEqual(
+                store.aggregate_open_risk_cash(
+                    bot_id="CHOCH_TEST",
+                    account_id="101-004-00000000-999",
+                    is_simulated=True,
+                ),
+                2_000.0,
+            )
+
+    def test_instrument_error_does_not_block_next_instrument(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ChochStateStore(Path(tmp) / "state.db")
+            store.ensure_schema()
+            engine = ChochEngine(config=config(), broker=FakeBroker(), state=store)
+            processed: list[str] = []
+            frame = pd.DataFrame({"close": [1.0]}, index=[pd.Timestamp("2026-01-01T00:00:00Z")])
+
+            engine.reconcile_read_only = lambda: {}
+            engine._process_timeframe = lambda *, instrument, granularity, count: frame
+
+            def process_shadow(*, instrument, s1_df, s2_df):
+                if instrument == "EUR_USD":
+                    raise RuntimeError("eur persistence failed")
+                processed.append(instrument)
+
+            engine._process_shadow_strategy = process_shadow
+
+            engine.process_once()
+
+            self.assertEqual(processed, ["NAS100_USD"])
+            with store.session() as conn:
+                row = conn.execute(
+                    """
+                    SELECT event_type, instrument, payload_json FROM choch_events
+                    WHERE event_type = 'CHOCH_INSTRUMENT_ERROR'
+                    """
+                ).fetchone()
+            self.assertEqual(row["instrument"], "EUR_USD")
+            self.assertIn("eur persistence failed", row["payload_json"])
 
     def test_current_stop_risk_rejects_stale_state_beyond_stop(self):
         with self.assertRaisesRegex(ValueError, "beyond protective stop"):
