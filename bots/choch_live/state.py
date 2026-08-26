@@ -70,6 +70,7 @@ class ChochStateStore:
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                     cancellation_reason TEXT,
+                    is_simulated INTEGER NOT NULL DEFAULT 0,
                     UNIQUE (bot_id, instrument, strategy_leg, client_order_key)
                 );
 
@@ -87,6 +88,7 @@ class ChochStateStore:
                     units INTEGER,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    is_simulated INTEGER NOT NULL DEFAULT 0,
                     UNIQUE (bot_id, instrument, strategy_leg, client_order_key)
                 );
 
@@ -112,6 +114,7 @@ class ChochStateStore:
                     realized_r REAL,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    is_simulated INTEGER NOT NULL DEFAULT 0,
                     UNIQUE (bot_id, instrument, strategy_leg, client_order_key)
                 );
 
@@ -153,6 +156,14 @@ class ChochStateStore:
                 );
                 """
             )
+            self._ensure_column(conn, "choch_setups", "is_simulated", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "choch_orders", "is_simulated", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "choch_trades", "is_simulated", "INTEGER NOT NULL DEFAULT 0")
+
+    def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+        cols = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     def start_run(self, *, bot_id: str, account_id: str, environment: str, version: str = "phase1") -> int:
         with self.session() as conn:
@@ -249,6 +260,7 @@ class ChochStateStore:
                 """
                 SELECT client_order_key FROM choch_orders
                 WHERE bot_id = ? AND account_id = ? AND state IN ('local_pending', 'broker_pending')
+                  AND is_simulated = 0
                 """,
                 (bot_id, account_id),
             ).fetchall()
@@ -261,7 +273,167 @@ class ChochStateStore:
                 SELECT oanda_trade_id FROM choch_trades
                 WHERE bot_id = ? AND account_id = ? AND state IN ('local_open', 'broker_open')
                   AND oanda_trade_id IS NOT NULL
+                  AND is_simulated = 0
                 """,
                 (bot_id, account_id),
             ).fetchall()
             return {str(row["oanda_trade_id"]) for row in rows}
+
+    def upsert_simulated_s1_result(
+        self,
+        *,
+        bot_id: str,
+        account_id: str,
+        instrument: str,
+        result,
+    ) -> None:
+        with self.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO choch_setups (
+                    bot_id, account_id, instrument, strategy_leg, state, direction,
+                    signal_bar_time, entry, stop, tp, r_value, client_order_key,
+                    cancellation_reason, is_simulated, updated_at
+                )
+                VALUES (?, ?, ?, 'S1', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'))
+                ON CONFLICT(bot_id, instrument, strategy_leg, client_order_key) DO UPDATE SET
+                    state = excluded.state,
+                    direction = excluded.direction,
+                    entry = excluded.entry,
+                    stop = excluded.stop,
+                    tp = excluded.tp,
+                    r_value = excluded.r_value,
+                    cancellation_reason = excluded.cancellation_reason,
+                    is_simulated = 1,
+                    updated_at = datetime('now')
+                """,
+                (
+                    bot_id,
+                    account_id,
+                    instrument,
+                    str(result.status),
+                    str(result.direction),
+                    result.event_time.isoformat(),
+                    result.entry,
+                    result.stop,
+                    result.target,
+                    result.risk,
+                    result.client_order_key,
+                    result.cancellation_reason,
+                ),
+            )
+            if result.entry is not None:
+                conn.execute(
+                    """
+                    INSERT INTO choch_trades (
+                        bot_id, account_id, instrument, strategy_leg, client_order_key,
+                        state, entry_time, exit_time, entry_price, stop_price, tp_price,
+                        realized_r, is_simulated, updated_at
+                    )
+                    VALUES (?, ?, ?, 'S1', ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'))
+                    ON CONFLICT(bot_id, instrument, strategy_leg, client_order_key) DO UPDATE SET
+                        state = excluded.state,
+                        entry_time = excluded.entry_time,
+                        exit_time = excluded.exit_time,
+                        entry_price = excluded.entry_price,
+                        stop_price = excluded.stop_price,
+                        tp_price = excluded.tp_price,
+                        realized_r = excluded.realized_r,
+                        is_simulated = 1,
+                        updated_at = datetime('now')
+                    """,
+                    (
+                        bot_id,
+                        account_id,
+                        instrument,
+                        result.client_order_key,
+                        str(result.outcome or result.status),
+                        result.entry_time.isoformat() if result.entry_time is not None else None,
+                        result.exit_time.isoformat() if result.exit_time is not None else None,
+                        result.entry,
+                        result.stop,
+                        result.target,
+                        result.net_r,
+                    ),
+                )
+
+    def upsert_simulated_s2_result(
+        self,
+        *,
+        bot_id: str,
+        account_id: str,
+        instrument: str,
+        result,
+    ) -> None:
+        key = f"{result.parent_s1_key}-S2"
+        with self.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO choch_setups (
+                    bot_id, account_id, instrument, strategy_leg, state, direction,
+                    signal_bar_time, entry, stop, tp, r_value, parent_s1_trade_id,
+                    s1_tp_time, client_order_key, is_simulated, updated_at
+                )
+                VALUES (?, ?, ?, 'S2', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'))
+                ON CONFLICT(bot_id, instrument, strategy_leg, client_order_key) DO UPDATE SET
+                    state = excluded.state,
+                    direction = excluded.direction,
+                    signal_bar_time = excluded.signal_bar_time,
+                    entry = excluded.entry,
+                    stop = excluded.stop,
+                    tp = excluded.tp,
+                    r_value = excluded.r_value,
+                    s1_tp_time = excluded.s1_tp_time,
+                    is_simulated = 1,
+                    updated_at = datetime('now')
+                """,
+                (
+                    bot_id,
+                    account_id,
+                    instrument,
+                    str(result.status),
+                    str(result.s2_direction),
+                    result.decision_time.isoformat() if result.decision_time is not None else None,
+                    result.entry,
+                    result.stop,
+                    result.target,
+                    result.risk,
+                    result.parent_s1_key,
+                    result.s1_tp_time.isoformat(),
+                    key,
+                ),
+            )
+            if result.entry is not None:
+                conn.execute(
+                    """
+                    INSERT INTO choch_trades (
+                        bot_id, account_id, instrument, strategy_leg, client_order_key,
+                        state, entry_time, exit_time, entry_price, stop_price, tp_price,
+                        realized_r, is_simulated, updated_at
+                    )
+                    VALUES (?, ?, ?, 'S2', ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'))
+                    ON CONFLICT(bot_id, instrument, strategy_leg, client_order_key) DO UPDATE SET
+                        state = excluded.state,
+                        entry_time = excluded.entry_time,
+                        exit_time = excluded.exit_time,
+                        entry_price = excluded.entry_price,
+                        stop_price = excluded.stop_price,
+                        tp_price = excluded.tp_price,
+                        realized_r = excluded.realized_r,
+                        is_simulated = 1,
+                        updated_at = datetime('now')
+                    """,
+                    (
+                        bot_id,
+                        account_id,
+                        instrument,
+                        key,
+                        str(result.outcome or result.status),
+                        result.decision_time.isoformat() if result.decision_time is not None else None,
+                        result.exit_time.isoformat() if result.exit_time is not None else None,
+                        result.entry,
+                        result.stop,
+                        result.target,
+                        result.r,
+                    ),
+                )

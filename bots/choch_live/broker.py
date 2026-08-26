@@ -127,14 +127,38 @@ class ChochBroker:
             return self.client.get_transactions_since(self.account_metadata.last_transaction_id)
         return {}
 
+    def get_account_nav(self) -> float:
+        return self.client.get_account_nav()
+
+    def get_quote_to_account_rate(self, quote_currency: str) -> float:
+        if not self.account_metadata or not self.account_metadata.currency:
+            raise RuntimeError("Account metadata must be loaded before conversion lookup")
+        account_currency = self.account_metadata.currency.upper()
+        quote = quote_currency.upper()
+        if quote == account_currency:
+            return 1.0
+
+        direct = self.client.get_price(f"{quote}_{account_currency}")
+        if direct is not None:
+            return (direct["bid"] + direct["ask"]) / 2
+
+        inverse = self.client.get_price(f"{account_currency}_{quote}")
+        if inverse is not None:
+            mid = (inverse["bid"] + inverse["ask"]) / 2
+            if mid <= 0:
+                raise RuntimeError(f"Invalid conversion price for {account_currency}_{quote}")
+            return 1.0 / mid
+
+        raise RuntimeError(f"No conversion price available for {quote}->{account_currency}")
+
     def place_order(self, *args, **kwargs):
-        raise RuntimeError("Broker writes disabled in CHoCH Phase 1")
+        raise RuntimeError("Broker writes disabled by CHoCH safety gate")
 
     def replace_order(self, *args, **kwargs):
-        raise RuntimeError("Broker writes disabled in CHoCH Phase 1")
+        raise RuntimeError("Broker writes disabled by CHoCH safety gate")
 
     def cancel_order(self, *args, **kwargs):
-        raise RuntimeError("Broker writes disabled in CHoCH Phase 1")
+        raise RuntimeError("Broker writes disabled by CHoCH safety gate")
 
     def close_trade(self, *args, **kwargs):
-        raise RuntimeError("Broker writes disabled in CHoCH Phase 1")
+        raise RuntimeError("Broker writes disabled by CHoCH safety gate")
