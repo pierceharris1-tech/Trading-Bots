@@ -277,3 +277,20 @@ INSIDE_DAYS_M15:
     - USD_CAD
     - NZD_USD
     - EUR_GBP
+
+CHOCH_OANDA_PRACTICE_v1:
+  strategy: choch_live
+  account_id: REPLACE_ME
+  allowed_oanda_env: practice
+  trading_enabled: false
+  dry_run: true
+  instruments:
+    eur_usd:
+      name: EUR_USD
+    nasdaq_100:
+      name: REPLACE_NAS100_INSTRUMENT
+  s1_timeframe: H1
+  s2_timeframe: M10
+  risk_pct: 0.02
+  max_account_risk_open: 0.04
+  max_units: 1000

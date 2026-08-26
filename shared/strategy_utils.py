@@ -27,6 +27,38 @@ def candles_to_df(candles_json: dict[str, Any]) -> pd.DataFrame:
     return df.set_index("time")
 
 
+def bid_ask_candles_to_df(candles_json: dict[str, Any]) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for c in candles_json.get("candles", []):
+        if not c.get("complete"):
+            continue
+        row: dict[str, Any] = {"time": c["time"]}
+        if c.get("bid") is not None:
+            row.update(
+                {
+                    "bid_open": float(c["bid"]["o"]),
+                    "bid_high": float(c["bid"]["h"]),
+                    "bid_low": float(c["bid"]["l"]),
+                    "bid_close": float(c["bid"]["c"]),
+                }
+            )
+        if c.get("ask") is not None:
+            row.update(
+                {
+                    "ask_open": float(c["ask"]["o"]),
+                    "ask_high": float(c["ask"]["h"]),
+                    "ask_low": float(c["ask"]["l"]),
+                    "ask_close": float(c["ask"]["c"]),
+                }
+            )
+        rows.append(row)
+    if not rows:
+        raise RuntimeError("No completed bid/ask candles returned")
+    df = pd.DataFrame(rows)
+    df["time"] = pd.to_datetime(df["time"], utc=True)
+    return df.set_index("time")
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -65,4 +97,3 @@ def pip_buffer_for_instrument(instrument: str) -> float:
     if instrument.endswith("JPY"):
         return 0.01
     return 0.0001
-

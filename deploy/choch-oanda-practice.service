@@ -1,0 +1,21 @@
+[Unit]
+Description=CHoCH OANDA Practice Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/trading-bots
+EnvironmentFile=/etc/qtp/oanda-choch-practice.env
+Environment=PYTHONPATH=/home/ubuntu/trading-bots
+Environment=TZ=UTC
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/trading-bots/.venv/bin/python -m bots.runner CHOCH_OANDA_PRACTICE_v1
+Restart=always
+RestartSec=15s
+StandardOutput=append:/home/ubuntu/logs/bots/choch-oanda-practice.log
+StandardError=append:/home/ubuntu/logs/bots/choch-oanda-practice.log
+
+[Install]
+WantedBy=multi-user.target

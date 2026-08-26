@@ -172,13 +172,8 @@ class OandaClient:
             )
 
 
-    def get_account_nav(self) -> float:
-        """
-        Fetch live account NAV (Net Asset Value) from OANDA.
-        This is the true account value including unrealised P&L.
-        Used for real-time position sizing.
-        """
-        data = self._request(
+    def get_account_summary(self) -> dict[str, Any]:
+        return self._request(
             "GET",
             f"/v3/accounts/{self.account_id}/summary",
             context={
@@ -187,6 +182,25 @@ class OandaClient:
                 "units": 0,
             },
         )
+
+    def get_account_instruments(self) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            f"/v3/accounts/{self.account_id}/instruments",
+            context={
+                "account_id": self.account_id,
+                "order_type": "ACCOUNT_INSTRUMENTS",
+                "units": 0,
+            },
+        )
+
+    def get_account_nav(self) -> float:
+        """
+        Fetch live account NAV (Net Asset Value) from OANDA.
+        This is the true account value including unrealised P&L.
+        Used for real-time position sizing.
+        """
+        data = self.get_account_summary()
         account = data.get("account", {})
         nav = account.get("NAV") or account.get("balance")
         if nav is None:
@@ -195,11 +209,21 @@ class OandaClient:
             )
         return float(nav)
 
-    def get_candles(self, instrument: str, granularity: str, count: int = 100) -> dict[str, Any]:
+    def get_candles(
+        self,
+        instrument: str,
+        granularity: str,
+        count: int = 100,
+        price: str = "M",
+    ) -> dict[str, Any]:
+        price = str(price or "M").strip().upper()
+        allowed = {"M", "B", "A", "BA"}
+        if price not in allowed:
+            raise ValueError(f"Unsupported OANDA candle price component: {price}")
         params = {
             "granularity": granularity,
             "count": count,
-            "price": "M",
+            "price": price,
         }
         return self._request(
             "GET",
@@ -210,6 +234,7 @@ class OandaClient:
                 "instrument": instrument,
                 "granularity": granularity,
                 "count": count,
+                "price": price,
                 "order_type": "NONE",
                 "units": 0,
             },
@@ -371,6 +396,9 @@ class OandaClient:
             context={"account_id": self.account_id, "order_type": "LIST_PENDING", "units": 0},
         )
 
+    def get_pending_orders(self) -> dict[str, Any]:
+        return self.list_pending_orders()
+
     def cancel_order(self, order_id: str) -> dict[str, Any]:
         return self._request(
             "PUT",
@@ -383,6 +411,22 @@ class OandaClient:
             "GET",
             f"/v3/accounts/{self.account_id}/openTrades",
             context={"account_id": self.account_id, "order_type": "LIST_OPEN_TRADES", "units": 0},
+        )
+
+    def get_open_trades(self) -> dict[str, Any]:
+        return self.list_open_trades()
+
+    def get_transactions_since(self, transaction_id: str) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            f"/v3/accounts/{self.account_id}/changes",
+            params={"sinceTransactionID": str(transaction_id)},
+            context={
+                "account_id": self.account_id,
+                "order_type": "ACCOUNT_CHANGES",
+                "since_transaction_id": str(transaction_id),
+                "units": 0,
+            },
         )
 
     def close_trade(self, trade_id: str, units: str = "ALL") -> dict[str, Any]:

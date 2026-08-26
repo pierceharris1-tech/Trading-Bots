@@ -13,6 +13,7 @@ STRATEGY_MAP = {
     "inside_days_daily": "bots.inside_days_daily",
     "slingshot_daily": "bots.slingshot_daily",
     "gold_5am_breakout": "bots.gold_5am_breakout",
+    "choch_live": "bots.choch_live.main",
 }
 
 

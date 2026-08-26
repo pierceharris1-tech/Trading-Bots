@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 _GRANULARITY_SECONDS = {
     "M1": 1 * 60,
     "M5": 5 * 60,
+    "M10": 10 * 60,
     "M15": 15 * 60,
     "M30": 30 * 60,
     "H1": 60 * 60,
