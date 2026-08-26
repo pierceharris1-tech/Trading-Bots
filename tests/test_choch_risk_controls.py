@@ -336,8 +336,15 @@ class TestChochRiskControls(unittest.TestCase):
             sizing = engine._estimate_shadow_sizing(instrument="EUR_USD", result=s1_candidate())
         self.assertIsNotNone(sizing)
         self.assertFalse(sizing["margin_ok"])
+        self.assertFalse(sizing["full_target_risk_feasible"])
         self.assertFalse(sizing["admitted"])
         self.assertEqual(sizing["rejection_reason"], "margin_insufficient")
+        self.assertEqual(sizing["intended_risk_pct"], 0.02)
+        self.assertAlmostEqual(sizing["desired_units_before_caps"], 250_000.0)
+        self.assertEqual(sizing["final_units"], 250_000)
+        self.assertAlmostEqual(sizing["margin_required_pct_of_nav"], sizing["margin_required"] / 100_000.0)
+        self.assertAlmostEqual(sizing["max_margin_supported_risk_cash"], 0.272)
+        self.assertAlmostEqual(sizing["max_margin_supported_risk_pct"], 0.00000272)
         self.assertEqual(sizing["units"], 250_000)
 
     def test_persisted_simulated_risk_feeds_next_aggregate_admission(self):

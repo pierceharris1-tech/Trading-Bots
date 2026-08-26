@@ -10,6 +10,7 @@ from bots.choch_live.models import InstrumentMetadata
 class ShadowPositionSize:
     risk_cash: float
     intended_risk_cash: float
+    desired_units_before_caps: float
     actual_risk_cash: float
     actual_risk_pct: float
     risk_per_unit: float
@@ -80,12 +81,60 @@ def size_shadow_position(
     return ShadowPositionSize(
         risk_cash=float(intended_risk_cash),
         intended_risk_cash=float(intended_risk_cash),
+        desired_units_before_caps=float(raw_units),
         actual_risk_cash=float(actual_risk_cash),
         actual_risk_pct=float(actual_risk_pct),
         risk_per_unit=float(risk_per_unit),
         units=float(units),
         signed_units=float(signed_units),
         margin_required=float(margin_required),
+    )
+
+
+@dataclass(frozen=True)
+class MarginFeasibility:
+    margin_required_pct_of_nav: float
+    full_target_risk_feasible: bool
+    max_margin_supported_units: float
+    max_margin_supported_risk_cash: float
+    max_margin_supported_risk_pct: float
+
+
+def assess_margin_feasibility(
+    *,
+    account_nav: float,
+    margin_available: float,
+    entry: float,
+    metadata: InstrumentMetadata,
+    quote_to_account_rate: float,
+    risk_per_unit: float,
+    margin_required: float,
+) -> MarginFeasibility:
+    if account_nav <= 0:
+        raise ValueError("account_nav must be positive")
+    if margin_available < 0:
+        raise ValueError("margin_available cannot be negative")
+    if entry <= 0:
+        raise ValueError("entry must be positive")
+    if quote_to_account_rate <= 0:
+        raise ValueError("quote_to_account_rate must be positive")
+    if risk_per_unit < 0:
+        raise ValueError("risk_per_unit cannot be negative")
+
+    margin_per_unit = entry * metadata.margin_rate * quote_to_account_rate
+    if margin_per_unit <= 0:
+        raise ValueError("margin_per_unit must be positive")
+
+    max_units = _floor_to_precision(margin_available / margin_per_unit, metadata.trade_units_precision)
+    if max_units < metadata.minimum_trade_size:
+        max_units = 0.0
+    supported_risk_cash = max_units * risk_per_unit
+    return MarginFeasibility(
+        margin_required_pct_of_nav=float(margin_required / account_nav),
+        full_target_risk_feasible=bool(margin_required <= margin_available + 1e-9),
+        max_margin_supported_units=float(max_units),
+        max_margin_supported_risk_cash=float(supported_risk_cash),
+        max_margin_supported_risk_pct=float(supported_risk_cash / account_nav),
     )
 
 

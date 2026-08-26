@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from bots.choch_live.models import InstrumentMetadata
-from bots.choch_live.risk import quote_currency, size_shadow_position
+from bots.choch_live.risk import assess_margin_feasibility, quote_currency, size_shadow_position
 
 
 class TestChochRisk(unittest.TestCase):
@@ -134,6 +134,47 @@ class TestChochRisk(unittest.TestCase):
         self.assertEqual(uncapped.units, 250_000)
         self.assertEqual(capped.units, 1000)
         self.assertLess(capped.units, uncapped.units)
+
+    def test_margin_feasibility_is_nav_scale_invariant(self):
+        metadata = InstrumentMetadata(
+            key="eur_usd",
+            name="EUR_USD",
+            margin_rate=0.03333333333333,
+            minimum_trade_size=1.0,
+            trade_units_precision=0,
+            pip_location=-4,
+            display_precision=5,
+            instrument_type="CURRENCY",
+        )
+
+        results = []
+        for nav in (100_000.0, 10_000.0, 1_000.0):
+            size = size_shadow_position(
+                account_nav=nav,
+                risk_pct=0.02,
+                entry=1.2000,
+                stop=1.1990,
+                direction="bullish",
+                metadata=metadata,
+                quote_to_account_rate=1.0,
+                max_units=10_000_000,
+            )
+            feasibility = assess_margin_feasibility(
+                account_nav=nav,
+                margin_available=nav,
+                entry=1.2000,
+                metadata=metadata,
+                quote_to_account_rate=1.0,
+                risk_per_unit=size.risk_per_unit,
+                margin_required=size.margin_required,
+            )
+            results.append(feasibility)
+
+        for result in results:
+            self.assertAlmostEqual(result.margin_required_pct_of_nav, results[0].margin_required_pct_of_nav)
+            self.assertAlmostEqual(result.max_margin_supported_risk_pct, results[0].max_margin_supported_risk_pct)
+        self.assertAlmostEqual(results[0].margin_required_pct_of_nav, 0.8)
+        self.assertAlmostEqual(results[0].max_margin_supported_risk_pct, 0.025)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,12 @@ from bots.choch_live.broker import ChochBroker
 from bots.choch_live.config import ChochConfig
 from bots.choch_live.logging import get_choch_logger
 from bots.choch_live.models import EventType
-from bots.choch_live.risk import assess_aggregate_risk_admission, quote_currency, size_shadow_position
+from bots.choch_live.risk import (
+    assess_aggregate_risk_admission,
+    assess_margin_feasibility,
+    quote_currency,
+    size_shadow_position,
+)
 from bots.choch_live.s1_structure import S1Result, simulate_s1
 from bots.choch_live.s2_continuation import S2Result, simulate_s2_from_s1
 from bots.choch_live.state import ChochStateStore
@@ -285,7 +290,16 @@ class ChochEngine:
                 quote_to_account_rate=conversion,
                 max_units=max_units,
             )
-            margin_ok = size.margin_required <= margin_available + 1e-9
+            feasibility = assess_margin_feasibility(
+                account_nav=nav,
+                margin_available=margin_available,
+                entry=result.entry,
+                metadata=metadata,
+                quote_to_account_rate=conversion,
+                risk_per_unit=size.risk_per_unit,
+                margin_required=size.margin_required,
+            )
+            margin_ok = feasibility.full_target_risk_feasible
             existing_risk = self.state.aggregate_open_risk_cash(
                 bot_id=self.config.bot_id,
                 account_id=self.config.account_id,
@@ -306,7 +320,10 @@ class ChochEngine:
                 "CHOCH_RISK_ADMISSION | instrument=%s | strategy_leg=%s | nav=%s | aggregate_cap_pct=%s "
                 "| aggregate_cap_cash=%s | existing_choch_risk_cash=%s | candidate_intended_risk_cash=%s "
                 "| candidate_actual_risk_cash=%s | resulting_aggregate_risk_cash=%s | margin_required=%s "
-                "| margin_available=%s | margin_ok=%s | admitted=%s | rejection_reason=%s",
+                "| margin_available=%s | margin_required_pct_of_nav=%s | desired_units_before_caps=%s "
+                "| final_units=%s | full_target_risk_feasible=%s | max_margin_supported_units=%s "
+                "| max_margin_supported_risk_cash=%s | max_margin_supported_risk_pct=%s | margin_ok=%s "
+                "| admitted=%s | rejection_reason=%s",
                 instrument,
                 strategy_leg,
                 nav,
@@ -318,22 +335,37 @@ class ChochEngine:
                 admission.resulting_aggregate_risk_cash,
                 size.margin_required,
                 margin_available,
+                feasibility.margin_required_pct_of_nav,
+                size.desired_units_before_caps,
+                size.units,
+                feasibility.full_target_risk_feasible,
+                feasibility.max_margin_supported_units,
+                feasibility.max_margin_supported_risk_cash,
+                feasibility.max_margin_supported_risk_pct,
                 margin_ok,
                 admitted,
                 rejection_reason,
             )
             return {
                 "nav": nav,
+                "intended_risk_pct": self.config.risk_pct,
                 "risk_cash": size.risk_cash,
                 "intended_risk_cash": size.intended_risk_cash,
+                "desired_units_before_caps": size.desired_units_before_caps,
                 "actual_risk_cash": size.actual_risk_cash,
                 "actual_risk_pct": size.actual_risk_pct,
                 "risk_per_unit": size.risk_per_unit,
                 "units": size.units,
+                "final_units": size.units,
                 "signed_units": size.signed_units,
                 "margin_required": size.margin_required,
                 "margin_available": margin_available,
+                "margin_required_pct_of_nav": feasibility.margin_required_pct_of_nav,
                 "margin_ok": margin_ok,
+                "full_target_risk_feasible": feasibility.full_target_risk_feasible,
+                "max_margin_supported_units": feasibility.max_margin_supported_units,
+                "max_margin_supported_risk_cash": feasibility.max_margin_supported_risk_cash,
+                "max_margin_supported_risk_pct": feasibility.max_margin_supported_risk_pct,
                 "margin_rate": metadata.margin_rate,
                 "effective_leverage": metadata.effective_leverage,
                 "quote_to_account_rate": conversion,
