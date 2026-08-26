@@ -138,16 +138,30 @@ class ChochBroker:
         if quote == account_currency:
             return 1.0
 
-        direct = self.client.get_price(f"{quote}_{account_currency}")
-        if direct is not None:
-            return (direct["bid"] + direct["ask"]) / 2
+        if not self.available_instruments:
+            raise RuntimeError("Account instruments must be loaded before conversion lookup")
 
-        inverse = self.client.get_price(f"{account_currency}_{quote}")
-        if inverse is not None:
-            mid = (inverse["bid"] + inverse["ask"]) / 2
-            if mid <= 0:
-                raise RuntimeError(f"Invalid conversion price for {account_currency}_{quote}")
-            return 1.0 / mid
+        direct_instrument = f"{quote}_{account_currency}"
+        if direct_instrument in self.available_instruments:
+            direct = self.client.get_price(direct_instrument)
+            if direct is None:
+                raise RuntimeError(f"No conversion price available for {direct_instrument}")
+            # Use the higher side for risk conversion so GBP loss-at-stop is not understated.
+            ask = float(direct["ask"])
+            if ask <= 0:
+                raise RuntimeError(f"Invalid conversion ask for {direct_instrument}")
+            return ask
+
+        inverse_instrument = f"{account_currency}_{quote}"
+        if inverse_instrument in self.available_instruments:
+            inverse = self.client.get_price(inverse_instrument)
+            if inverse is None:
+                raise RuntimeError(f"No conversion price available for {inverse_instrument}")
+            # For ACCOUNT_QUOTE, 1 / bid is the conservative FROM->ACCOUNT conversion.
+            bid = float(inverse["bid"])
+            if bid <= 0:
+                raise RuntimeError(f"Invalid conversion bid for {inverse_instrument}")
+            return 1.0 / bid
 
         raise RuntimeError(f"No conversion price available for {quote}->{account_currency}")
 

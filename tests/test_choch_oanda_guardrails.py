@@ -41,10 +41,12 @@ def config() -> ChochConfig:
 
 
 class FakeClient:
-    def __init__(self, *, account_id="101-004-00000000-999", instruments=None):
+    def __init__(self, *, account_id="101-004-00000000-999", instruments=None, prices=None):
         self.base_url = "https://api-fxpractice.oanda.com"
         self._account_id = account_id
         self._instruments = instruments or ["EUR_USD", "NAS100_USD"]
+        self._prices = prices or {}
+        self.price_calls = []
 
     def get_account_summary(self):
         return {"account": {"id": self._account_id, "currency": "GBP", "lastTransactionID": "42"}}
@@ -78,9 +80,22 @@ class FakeClient:
                 "displayPrecision": 5,
                 "type": "CURRENCY",
             },
+            "USD_GBP": {
+                "name": "USD_GBP",
+                "marginRate": "0.03333333333333",
+                "minimumTradeSize": "1",
+                "tradeUnitsPrecision": 0,
+                "pipLocation": -4,
+                "displayPrecision": 5,
+                "type": "CURRENCY",
+            },
         }
         items = [defaults[name] if isinstance(name, str) else name for name in self._instruments]
         return {"instruments": items}
+
+    def get_price(self, instrument):
+        self.price_calls.append(instrument)
+        return self._prices.get(instrument)
 
 
 class TestChochOandaGuardrails(unittest.TestCase):
@@ -147,6 +162,61 @@ class TestChochOandaGuardrails(unittest.TestCase):
 
     def test_phase1_write_methods_raise(self):
         broker = ChochBroker(config())
+        for method_name in ("place_order", "replace_order", "cancel_order", "close_trade"):
+            with self.subTest(method=method_name):
+                with self.assertRaisesRegex(RuntimeError, "Broker writes disabled"):
+                    getattr(broker, method_name)()
+
+    def test_conversion_same_currency_is_one_without_price_lookup(self):
+        broker = ChochBroker(config())
+        broker.client = FakeClient()
+        broker.account_metadata = replace(broker.load_account_metadata(), currency="USD")
+        broker.available_instruments = {"EUR_USD", "NAS100_USD"}
+        self.assertEqual(broker.get_quote_to_account_rate("USD"), 1.0)
+        self.assertEqual(broker.client.price_calls, [])
+
+    def test_conversion_direct_available_uses_direct_ask(self):
+        broker = ChochBroker(config())
+        broker.client = FakeClient(
+            instruments=["EUR_USD", "NAS100_USD", "USD_GBP"],
+            prices={"USD_GBP": {"bid": 0.79, "ask": 0.80}},
+        )
+        broker.load_account_metadata()
+        broker.load_and_validate_instruments()
+        self.assertEqual(broker.get_quote_to_account_rate("USD"), 0.80)
+        self.assertEqual(broker.client.price_calls, ["USD_GBP"])
+
+    def test_conversion_inverse_available_uses_inverse_bid_without_calling_missing_direct(self):
+        broker = ChochBroker(config())
+        broker.client = FakeClient(
+            instruments=["EUR_USD", "NAS100_USD", "GBP_USD"],
+            prices={"GBP_USD": {"bid": 1.25, "ask": 1.26}},
+        )
+        broker.load_account_metadata()
+        broker.load_and_validate_instruments()
+        self.assertAlmostEqual(broker.get_quote_to_account_rate("USD"), 0.8)
+        self.assertEqual(broker.client.price_calls, ["GBP_USD"])
+
+    def test_conversion_eur_account_usd_exposure_uses_eur_usd_inverse(self):
+        broker = ChochBroker(config())
+        broker.client = FakeClient(
+            instruments=["EUR_USD", "NAS100_USD"],
+            prices={"EUR_USD": {"bid": 1.10, "ask": 1.11}},
+        )
+        broker.load_account_metadata()
+        broker.account_metadata = replace(broker.account_metadata, currency="EUR")
+        broker.load_and_validate_instruments()
+        self.assertAlmostEqual(broker.get_quote_to_account_rate("USD"), 1 / 1.10)
+        self.assertEqual(broker.client.price_calls, ["EUR_USD"])
+
+    def test_conversion_unavailable_fails_cleanly_without_guessing_or_writes(self):
+        broker = ChochBroker(config())
+        broker.client = FakeClient(instruments=["EUR_USD", "NAS100_USD"])
+        broker.load_account_metadata()
+        broker.load_and_validate_instruments()
+        with self.assertRaisesRegex(RuntimeError, "No conversion price available"):
+            broker.get_quote_to_account_rate("USD")
+        self.assertEqual(broker.client.price_calls, [])
         for method_name in ("place_order", "replace_order", "cancel_order", "close_trade"):
             with self.subTest(method=method_name):
                 with self.assertRaisesRegex(RuntimeError, "Broker writes disabled"):
