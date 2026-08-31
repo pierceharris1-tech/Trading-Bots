@@ -227,7 +227,7 @@ class TestChochExecution(unittest.TestCase):
             self.assertEqual(order["oanda_order_id"], "1")
             self.assertEqual(order["is_simulated"], 0)
 
-    def test_startup_lookback_watermark_prevents_order_submission(self):
+    def test_watermark_equal_signal_is_current_and_can_submit(self):
         with tempfile.TemporaryDirectory() as tmp:
             state = ChochStateStore(Path(tmp) / "state.db")
             state.ensure_schema()
@@ -247,7 +247,27 @@ class TestChochExecution(unittest.TestCase):
             broker.get_complete_candles = lambda **kwargs: (latest, payload["candles"][0], payload)
 
             engine._process_timeframe(instrument="EUR_USD", granularity="H1", count=500)
+            engine._reconciliation_ok = True
             engine._maybe_execute_s1(instrument="EUR_USD", result=s1_result(event_time="2026-01-01T12:00:00Z"))
+
+            self.assertEqual(len(broker.submissions), 1)
+
+    def test_signal_before_watermark_is_replay_and_cannot_submit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = ChochStateStore(Path(tmp) / "state.db")
+            state.ensure_schema()
+            state.set_execution_watermark(
+                bot_id="CHOCH_TEST",
+                account_id="101-004-00000000-999",
+                instrument="EUR_USD",
+                granularity="H1",
+                candle_time="2026-01-01T12:00:00+00:00",
+            )
+            broker = FakeExecutionBroker()
+            engine = ChochEngine(config=execution_config(), broker=broker, state=state)
+            engine._reconciliation_ok = True
+
+            engine._maybe_execute_s1(instrument="EUR_USD", result=s1_result(event_time="2026-01-01T11:00:00Z"))
 
             self.assertEqual(broker.submissions, [])
 

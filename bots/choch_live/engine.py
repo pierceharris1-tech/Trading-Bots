@@ -1109,7 +1109,7 @@ class ChochEngine:
             instrument=instrument,
             granularity=self.config.s1_timeframe,
         )
-        if watermark is not None and pd.Timestamp(result.event_time) > pd.Timestamp(watermark):
+        if watermark is not None and pd.Timestamp(result.event_time) >= pd.Timestamp(watermark):
             return False
         self.state.record_event(
             bot_id=self.config.bot_id,
